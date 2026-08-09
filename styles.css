@@ -1,0 +1,477 @@
+.current-note-ai-view {
+  --cnai-accent: var(--interactive-accent);
+  --cnai-assistant: var(--background-secondary);
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 0;
+  background: var(--background-primary);
+}
+
+.current-note-ai-header,
+.current-note-ai-context,
+.current-note-ai-composer {
+  flex: 0 0 auto;
+}
+
+.current-note-ai-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.current-note-ai-brand {
+  min-width: 0;
+}
+
+.current-note-ai-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.current-note-ai-history-button {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 2px 7px;
+  color: var(--text-muted);
+  background: transparent;
+  font-size: var(--font-ui-smaller);
+}
+
+.current-note-ai-history-button:hover,
+.current-note-ai-history-button.is-open {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
+.current-note-ai-history-count {
+  min-width: 17px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 13%, transparent);
+  line-height: 1.3;
+  text-align: center;
+}
+
+.current-note-ai-model-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 5px;
+}
+
+.current-note-ai-provider {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--text-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 13%, transparent);
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+}
+
+.current-note-ai-model-select {
+  min-width: 0;
+  max-width: 190px;
+  height: 26px;
+  padding-block: 0;
+  font-size: var(--font-ui-smaller);
+  text-overflow: ellipsis;
+}
+
+.current-note-ai-model-refresh {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  font-size: 16px;
+}
+
+.current-note-ai-model-refresh:disabled {
+  opacity: 0.55;
+}
+
+.current-note-ai-history-panel {
+  flex: 0 0 auto;
+  max-height: min(320px, 42vh);
+  margin: 8px 12px 0;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  box-shadow: var(--shadow-s);
+}
+
+.current-note-ai-history-list {
+  display: grid;
+  gap: 3px;
+}
+
+.current-note-ai-history-item {
+  display: block;
+  width: 100%;
+  padding: 8px 9px;
+  border: 0;
+  color: var(--text-normal);
+  background: transparent;
+  text-align: left;
+}
+
+.current-note-ai-history-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.current-note-ai-history-item.is-active {
+  background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+}
+
+.current-note-ai-history-title {
+  overflow: hidden;
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.current-note-ai-history-meta,
+.current-note-ai-history-empty {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.current-note-ai-history-meta {
+  overflow: hidden;
+  margin-top: 2px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.current-note-ai-history-empty {
+  padding: 10px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.current-note-ai-context-label,
+.current-note-ai-proposal-stats,
+.current-note-ai-composer-hint {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.current-note-ai-header-actions,
+.current-note-ai-composer-buttons,
+.current-note-ai-proposal-actions,
+.current-note-ai-selection-actions,
+.current-note-ai-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.current-note-ai-header-actions button,
+.current-note-ai-selection-actions button {
+  padding: 3px 8px;
+  font-size: var(--font-ui-smaller);
+}
+
+.current-note-ai-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 12px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary-alt);
+}
+
+.current-note-ai-context-label {
+  letter-spacing: 0.04em;
+}
+
+.current-note-ai-context-file {
+  overflow: hidden;
+  max-width: 220px;
+  margin-top: 2px;
+  font-weight: var(--font-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.current-note-ai-context-ready,
+.current-note-ai-status {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--text-success);
+  background: color-mix(in srgb, var(--color-green) 14%, transparent);
+  font-size: var(--font-ui-smaller);
+}
+
+.current-note-ai-status.is-stale {
+  color: var(--text-warning);
+  background: color-mix(in srgb, var(--color-orange) 14%, transparent);
+}
+
+.current-note-ai-error {
+  flex: 0 0 auto;
+  margin: 10px 12px 0;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--text-error) 45%, transparent);
+  border-radius: var(--radius-m);
+  color: var(--text-error);
+  background: color-mix(in srgb, var(--text-error) 8%, transparent);
+  font-size: var(--font-ui-small);
+}
+
+.current-note-ai-warning {
+  flex: 0 0 auto;
+  margin: 10px 12px 0;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--text-warning) 45%, transparent);
+  border-radius: var(--radius-m);
+  color: var(--text-warning);
+  background: color-mix(in srgb, var(--color-orange) 8%, transparent);
+  font-size: var(--font-ui-small);
+}
+
+.current-note-ai-timeline {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 14px 12px 18px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+
+.current-note-ai-empty {
+  align-self: center;
+  max-width: 280px;
+  margin: auto 0;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.current-note-ai-empty-icon {
+  margin-bottom: 8px;
+  color: var(--text-accent);
+  font-size: 30px;
+}
+
+.current-note-ai-empty p {
+  margin: 6px 0 0;
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.current-note-ai-message-row {
+  display: flex;
+  width: 100%;
+}
+
+.current-note-ai-message-row.is-user {
+  justify-content: flex-end;
+}
+
+.current-note-ai-message-row.is-assistant {
+  justify-content: flex-start;
+}
+
+.current-note-ai-bubble {
+  max-width: min(86%, 680px);
+  padding: 9px 12px;
+  border-radius: 18px;
+  background: var(--cnai-assistant);
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.current-note-ai-message-row.is-user .current-note-ai-bubble {
+  border-bottom-right-radius: 6px;
+  background: var(--cnai-accent);
+  color: var(--text-on-accent);
+}
+
+.current-note-ai-message-row.is-assistant .current-note-ai-bubble {
+  border-bottom-left-radius: 6px;
+}
+
+.current-note-ai-bubble.is-typing {
+  display: flex;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+.current-note-ai-bubble.is-typing span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  animation: current-note-ai-pulse 1.15s infinite ease-in-out;
+}
+
+.current-note-ai-bubble.is-typing span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.current-note-ai-bubble.is-typing span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes current-note-ai-pulse {
+  0%, 70%, 100% { opacity: 0.35; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-2px); }
+}
+
+.current-note-ai-proposal {
+  padding: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  background: var(--background-secondary);
+}
+
+.current-note-ai-proposal-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.current-note-ai-proposal > p {
+  margin: 9px 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.current-note-ai-selection-actions {
+  justify-content: flex-end;
+  margin-bottom: 7px;
+}
+
+.current-note-ai-operation {
+  margin-top: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+}
+
+.current-note-ai-operation summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+}
+
+.current-note-ai-diff {
+  display: grid;
+  gap: 7px;
+  padding: 0 8px 8px;
+}
+
+.current-note-ai-diff-block {
+  min-width: 0;
+  border-radius: var(--radius-s);
+  overflow: hidden;
+}
+
+.current-note-ai-diff-block.is-removed {
+  background: color-mix(in srgb, var(--color-red) 10%, var(--background-primary));
+}
+
+.current-note-ai-diff-block.is-added {
+  background: color-mix(in srgb, var(--color-green) 10%, var(--background-primary));
+}
+
+.current-note-ai-diff-label {
+  padding: 4px 7px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.05em;
+}
+
+.current-note-ai-diff pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 7px;
+  overflow: auto;
+  color: var(--text-normal);
+  background: transparent;
+  font-size: var(--font-smaller);
+  white-space: pre-wrap;
+}
+
+.current-note-ai-proposal-actions {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.current-note-ai-composer {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-primary);
+}
+
+.current-note-ai-composer textarea {
+  width: 100%;
+  min-height: 70px;
+  max-height: 220px;
+  resize: vertical;
+  border-radius: 16px;
+  padding: 10px 12px;
+  background: var(--background-secondary);
+}
+
+.current-note-ai-composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.current-note-ai-modal-actions {
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+@media (max-width: 430px) {
+  .current-note-ai-header,
+  .current-note-ai-context,
+  .current-note-ai-composer-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .current-note-ai-bubble {
+    max-width: 94%;
+  }
+
+  .current-note-ai-header-actions,
+  .current-note-ai-composer-buttons {
+    justify-content: flex-end;
+  }
+
+  .current-note-ai-model-select {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+}

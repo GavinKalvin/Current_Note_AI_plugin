@@ -1,0 +1,7 @@
+node_modules
+main.js
+data.json
+coverage
+release
+*.log
+.DS_Store

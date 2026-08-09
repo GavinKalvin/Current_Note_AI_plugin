@@ -1,0 +1,9 @@
+{
+  "id": "current-note-ai",
+  "name": "Current Note AI",
+  "version": "0.1.3",
+  "minAppVersion": "1.13.0",
+  "description": "Discuss and safely revise the current Markdown note with external AI providers.",
+  "author": "Zhang Fan",
+  "isDesktopOnly": true
+}
