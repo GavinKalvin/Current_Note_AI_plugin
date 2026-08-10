@@ -10,7 +10,7 @@ Current Note AI lets a user discuss or revise exactly one explicitly bound Markd
 2. Immediately before a request, the gate verifies that the same leaf still exposes the same file and captures the complete unsaved editor text.
 3. The prompt builder combines that snapshot, the in-memory conversation, and the user's request.
 4. `DeepSeekAdapter` sends a non-streaming HTTPS request through Obsidian `requestUrl`.
-5. Discussion responses are displayed as text. Edit responses are treated as untrusted JSON and must pass local validation.
+5. Discussion responses are parsed by the plugin's isolated Markdown renderer. It does not invoke Obsidian or third-party post-processors, accepts no raw HTML, and never auto-loads images or Obsidian embeds. Edit responses are treated as untrusted JSON and must pass local validation.
 
 ## Edit transaction
 

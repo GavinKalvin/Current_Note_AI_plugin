@@ -18,6 +18,13 @@ Current Note AI intentionally has no model-callable tools, filesystem commands, 
 - The bound editor, file object, path, and complete source text are checked again immediately before the Editor transaction.
 - Revert is available only while the live note still exactly equals the post-apply text.
 
+## Assistant reply rendering
+
+- Provider-authored Markdown is parsed by a bundled, isolated renderer rather than Obsidian's global Markdown processing pipeline.
+- Raw HTML is escaped and executable link protocols are rejected.
+- Markdown images and Obsidian embeds are displayed as inert text and never auto-load remote or Vault content.
+- Fenced code is displayed as escaped code and cannot invoke third-party code-block processors.
+
 ## Reporting
 
 Do not include API keys or private note content in bug reports. Report a security issue privately to the maintainer before public disclosure.

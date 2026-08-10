@@ -2,7 +2,7 @@
 
 Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 分析、讨论并安全修改当前 Markdown 笔记。
 
-当前公开版本：**v0.1.3**。最低 Obsidian 版本为 **1.13.0**，仅支持桌面端。
+当前版本：**v0.1.4**。最低 Obsidian 版本为 **1.13.0**，仅支持桌面端。
 
 它的核心原则不是“让模型直接编辑文件”，而是把 AI 修改变成可审阅的本地事务：模型只返回结构化提案；插件在本地验证、展示差异，并且只在用户点击 **Apply selected** 后写入。
 
@@ -10,6 +10,7 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 分析、讨�
 
 - Ribbon 按钮和命令面板打开右侧聊天栏。
 - iMessage 风格的用户/AI 对话气泡。
+- AI 回复支持安全的 Markdown 排版，包括标题、列表、表格、引用、链接和代码块；原始 HTML 与自动嵌入被禁用。
 - 输入框支持 Enter、Command+Enter 或 Ctrl+Enter 发送，Shift+Enter 换行，并避免中文输入法组词确认时误发。
 - 侧栏顶部可直接选择 DeepSeek 模型，并可在不发送笔记内容的前提下刷新 `/models` 列表。
 - 侧栏顶部的 **History** 按钮按最近更新时间列出会话；首条用户消息会在本地自动生成会话标题。
@@ -26,7 +27,7 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 分析、讨�
 
 ### 从 Release 安装（推荐）
 
-1. 从 GitHub Releases 下载 `current-note-ai-0.1.3.zip`。
+1. 从 GitHub Releases 下载 `current-note-ai-0.1.4.zip`。
 2. 解压到 Vault 的 `.obsidian/plugins/current-note-ai/`。
 3. 确认目录中包含 `main.js`、`manifest.json`、`styles.css`。
 4. 在 **Settings → Third-party plugins** 中启用 **Current Note AI**。
