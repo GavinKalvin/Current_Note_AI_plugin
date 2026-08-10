@@ -1,6 +1,6 @@
-# Current Note AI v0.1.3
+# Current Note AI v0.1.4
 
-The first public release of Current Note AI, a desktop-only Obsidian plugin for discussing and safely revising the currently bound Markdown note with DeepSeek.
+Current Note AI v0.1.4 adds safe Markdown rendering for assistant replies while preserving the plugin's existing document and provider trust boundaries.
 
 ## Highlights
 
@@ -12,10 +12,12 @@ The first public release of Current Note AI, a desktop-only Obsidian plugin for 
 - Safe Revert only while the note still matches the known AI-edited result.
 - Enter, Command+Enter, Ctrl+Enter, and numpad Enter send; Shift+Enter inserts a newline.
 - API keys stored through Obsidian SecretStorage rather than plugin `data.json`.
+- Assistant replies render headings, lists, tables, blockquotes, links, inline code, and fenced code blocks.
+- Rendering is isolated from Obsidian and third-party Markdown post-processors; raw HTML and automatic embeds remain disabled.
 
 ## Install
 
-1. Download `current-note-ai-0.1.3.zip` below.
+1. Download `current-note-ai-0.1.4.zip` below.
 2. Extract it into `<vault>/.obsidian/plugins/current-note-ai/`.
 3. Confirm that the directory contains `main.js`, `manifest.json`, and `styles.css`.
 4. Enable **Current Note AI** in Obsidian's third-party plugin settings.
@@ -31,7 +33,7 @@ Conversation history is stored locally in plugin `data.json` and may contain pri
 ## Validation
 
 - TypeScript type check passed.
-- 31 Vitest tests passed across editing safety, prompt boundaries, history persistence, and keyboard shortcuts.
+- TypeScript and Vitest validation cover editing safety, prompt boundaries, history persistence, keyboard shortcuts, and Markdown rendering safety.
 - Production bundle built and verified in Obsidian 1.13.4 on macOS.
 
 See `README.md`, `SECURITY.md`, and `docs/ARCHITECTURE.md` for full details.

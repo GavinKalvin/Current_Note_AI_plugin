@@ -2,6 +2,7 @@ import { ItemView, MarkdownView, Notice, WorkspaceLeaf } from "obsidian";
 import { compileSelectedOperations, EditProposalError, validateEditProposal } from "./core/edit-proposal";
 import { createConversationTitle } from "./core/conversation-history";
 import { shouldSubmitComposer } from "./core/composer-shortcut";
+import { renderAssistantMarkdown } from "./core/markdown-rendering";
 import { buildDiscussionMessages, buildEditMessages } from "./core/prompt";
 import type { BoundMarkdownDocument } from "./context";
 import { CurrentDocumentError } from "./context";
@@ -335,7 +336,12 @@ export class CurrentNoteAiView extends ItemView {
       cls: `current-note-ai-message-row is-${message.role}`,
     });
     const bubble = row.createDiv({ cls: "current-note-ai-bubble" });
-    bubble.setText(message.content);
+    if (message.role === "assistant") {
+      bubble.addClass("current-note-ai-markdown", "markdown-rendered");
+      bubble.innerHTML = renderAssistantMarkdown(message.content);
+    } else {
+      bubble.setText(message.content);
+    }
   }
 
   private renderTypingBubble(container: HTMLElement): void {

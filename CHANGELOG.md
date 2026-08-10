@@ -2,6 +2,17 @@
 
 All notable changes to Current Note AI are documented here.
 
+## 0.1.4 - 2026-08-10
+
+### Added
+
+- Render assistant replies as Markdown, including headings, lists, tables, blockquotes, links, inline code, and fenced code blocks.
+
+### Safety
+
+- Parse replies in an isolated renderer instead of invoking Obsidian or third-party Markdown post-processors.
+- Escape raw HTML, reject executable link protocols, and prevent Markdown or Obsidian embeds from loading content automatically.
+
 ## 0.1.3 - 2026-08-09
 
 Initial public release.
