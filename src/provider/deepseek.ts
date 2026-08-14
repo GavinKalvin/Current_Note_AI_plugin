@@ -2,10 +2,10 @@ import { requestUrl } from "obsidian";
 import type {
   CompletionRequest,
   CompletionResponse,
-  CompletionUsage,
   ProviderAdapter,
   ProviderModel,
 } from "../types";
+import { parseCompletionUsage } from "../core/completion";
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
 
@@ -49,16 +49,6 @@ function providerErrorMessage(envelope: Record<string, unknown>, status: number)
     : `DeepSeek request failed with HTTP ${status}.`;
 }
 
-function usageFrom(value: unknown): CompletionUsage | undefined {
-  const record = asRecord(value);
-  if (!record) return undefined;
-  return {
-    promptTokens: typeof record.prompt_tokens === "number" ? record.prompt_tokens : undefined,
-    completionTokens: typeof record.completion_tokens === "number" ? record.completion_tokens : undefined,
-    totalTokens: typeof record.total_tokens === "number" ? record.total_tokens : undefined,
-  };
-}
-
 export class DeepSeekAdapter implements ProviderAdapter {
   constructor(private readonly baseUrl = DEFAULT_BASE_URL) {}
 
@@ -99,6 +89,7 @@ export class DeepSeekAdapter implements ProviderAdapter {
       messages: request.messages,
       max_tokens: request.options.maxTokens,
       temperature: request.options.temperature,
+      thinking: { type: request.options.thinking },
       stream: false,
     };
     if (request.options.responseFormat === "json") {
@@ -129,14 +120,17 @@ export class DeepSeekAdapter implements ProviderAdapter {
     const message = asRecord(firstChoice?.message);
     const content = message?.content;
     const finishReason = firstChoice?.finish_reason;
-    if (typeof content !== "string" || content.trim().length === 0) {
+    if (typeof content !== "string") {
       throw new ProviderRequestError("empty-response", "DeepSeek returned an empty response.");
+    }
+    if (content.trim().length === 0 && finishReason === "stop") {
+      throw new ProviderRequestError("empty-response", "DeepSeek returned an empty completed response.");
     }
 
     return {
       content,
       finishReason: typeof finishReason === "string" ? finishReason : "unknown",
-      usage: usageFrom(envelope.usage),
+      usage: parseCompletionUsage(envelope.usage),
     };
   }
 }

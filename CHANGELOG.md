@@ -2,6 +2,28 @@
 
 All notable changes to Current Note AI are documented here.
 
+## 0.1.5 - 2026-08-10
+
+### Added
+
+- Add a budget-aware response contract that requires DeepSeek to disclose uncovered material instead of silently omitting it.
+- Add a manual **Continue** action for discussion responses stopped by the output limit, with a maximum of two continuations.
+- Add schema v2 edit responses with `complete` and `needs_segmentation` states.
+- Add one explicit, bounded higher-budget retry for incomplete edit proposals.
+- Persist finish reason, generation state, note hash, and numeric token usage separately from message text.
+
+### Changed
+
+- Explicitly disable DeepSeek thinking mode for discussion and edit requests instead of inheriting the provider default.
+- Parse reasoning-token usage without storing or displaying raw reasoning content.
+- Keep UI truncation warnings out of assistant message content and migrate the legacy warning suffix when loading History.
+
+### Safety
+
+- Continue is manual, note-snapshot-bound, paid-request-labelled, and capped at two attempts.
+- Incomplete or `needs_segmentation` edit JSON is never parsed as an applicable proposal.
+- An edit retry always regenerates a complete proposal against the same note hash and is offered at most once.
+
 ## 0.1.4 - 2026-08-10
 
 ### Added

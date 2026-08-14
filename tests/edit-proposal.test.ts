@@ -81,7 +81,56 @@ describe("validateEditProposal", () => {
   });
 
   it("rejects an unsupported schemaVersion with the invalid-schema code", () => {
-    const raw = JSON.stringify({ schemaVersion: 2, summary: "No", operations: [] });
+    const raw = JSON.stringify({ schemaVersion: 3, summary: "No", operations: [] });
+
+    expectProposalError(() => validateEditProposal(raw, "note"), "invalid-schema");
+  });
+
+  it("accepts a complete schemaVersion 2 proposal", () => {
+    const raw = JSON.stringify({
+      schemaVersion: 2,
+      status: "complete",
+      summary: "Replace the requested term.",
+      coveredTargets: ["terminology"],
+      uncoveredTargets: [],
+      operations: [{
+        id: "replace",
+        oldText: "old term",
+        newText: "new term",
+        reason: "Use the requested terminology.",
+      }],
+    });
+
+    expect(validateEditProposal(raw, "The old term appears once.").operations).toHaveLength(1);
+  });
+
+  it("surfaces needs_segmentation without accepting partial operations", () => {
+    const raw = JSON.stringify({
+      schemaVersion: 2,
+      status: "needs_segmentation",
+      summary: "The request is too large.",
+      coveredTargets: [],
+      uncoveredTargets: ["remaining sections"],
+      operations: [],
+    });
+
+    expectProposalError(() => validateEditProposal(raw, "note"), "needs-segmentation");
+  });
+
+  it("rejects partial operations in a needs_segmentation response", () => {
+    const raw = JSON.stringify({
+      schemaVersion: 2,
+      status: "needs_segmentation",
+      summary: "The request is too large.",
+      coveredTargets: ["first section"],
+      uncoveredTargets: ["remaining sections"],
+      operations: [{
+        id: "partial",
+        oldText: "note",
+        newText: "NOTE",
+        reason: "Partial change.",
+      }],
+    });
 
     expectProposalError(() => validateEditProposal(raw, "note"), "invalid-schema");
   });

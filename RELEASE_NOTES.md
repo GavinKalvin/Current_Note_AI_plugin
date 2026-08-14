@@ -1,39 +1,30 @@
-# Current Note AI v0.1.4
+# Current Note AI v0.1.5
 
-Current Note AI v0.1.4 adds safe Markdown rendering for assistant replies while preserving the plugin's existing document and provider trust boundaries.
+Current Note AI v0.1.5 adds explicit output-budget control and safe recovery when DeepSeek stops at the generation limit.
 
 ## Highlights
 
-- iMessage-style sidebar discussion using the complete unsaved Markdown source of the bound current note.
-- DeepSeek model selector and note-free `/models` refresh control.
-- Automatically named local History with note-binding checks before a conversation can continue.
-- Structured edit proposals with per-operation review and selective Apply.
-- Exact snapshot, unique-anchor, overlap, operation-count, and change-budget validation.
-- Safe Revert only while the note still matches the known AI-edited result.
-- Enter, Command+Enter, Ctrl+Enter, and numpad Enter send; Shift+Enter inserts a newline.
-- API keys stored through Obsidian SecretStorage rather than plugin `data.json`.
-- Assistant replies render headings, lists, tables, blockquotes, links, inline code, and fenced code blocks.
-- Rendering is isolated from Obsidian and third-party Markdown post-processors; raw HTML and automatic embeds remain disabled.
+- DeepSeek discussion and edit requests now explicitly use non-thinking mode instead of inheriting the provider default.
+- The system prompt prioritizes the conclusion, reserves room to finish cleanly, and requires disclosure of material that did not fit.
+- Incomplete discussion replies retain their raw content, show a separate status, and offer a manual **Continue** action bound to the same note snapshot.
+- Continue is a new paid request and is capped at two attempts; automatic continuation remains disabled.
+- Edit JSON uses schema v2 with `complete` and `needs_segmentation` states.
+- Truncated and `needs_segmentation` edit responses never become proposals. One explicit higher-budget full regeneration may be offered against the same note hash.
+- Token usage now includes reasoning-token details when DeepSeek returns them; raw reasoning content is not stored or displayed.
+- Legacy truncation warnings are migrated out of saved assistant message content when History loads.
 
 ## Install
 
-1. Download `current-note-ai-0.1.4.zip` below.
+1. Download `current-note-ai-0.1.5.zip`.
 2. Extract it into `<vault>/.obsidian/plugins/current-note-ai/`.
 3. Confirm that the directory contains `main.js`, `manifest.json`, and `styles.css`.
-4. Enable **Current Note AI** in Obsidian's third-party plugin settings.
+4. Enable or reload **Current Note AI** in Obsidian's third-party plugin settings.
 
 Minimum Obsidian version: 1.13.0. Desktop only.
 
-## Privacy boundary
-
-Opening the sidebar, selecting a cached model, loading History, or reviewing/applying an edit does not send note content. Send and Propose changes transmit the complete bound Markdown snapshot and relevant conversation context to DeepSeek after user consent. The plugin does not search the Vault, expand links or embeds, expose model-callable tools, run commands, or collect telemetry.
-
-Conversation history is stored locally in plugin `data.json` and may contain private material. The API key itself remains in Obsidian SecretStorage.
-
 ## Validation
 
-- TypeScript type check passed.
-- TypeScript and Vitest validation cover editing safety, prompt boundaries, history persistence, keyboard shortcuts, and Markdown rendering safety.
-- Production bundle built and verified in Obsidian 1.13.4 on macOS.
+- TypeScript type check and 50 Vitest tests cover prompt boundaries, completion usage, continuation overlap, history migration, edit schema safety, keyboard shortcuts, and Markdown rendering.
+- Production bundle should be rebuilt and installed before release.
 
-See `README.md`, `SECURITY.md`, and `docs/ARCHITECTURE.md` for full details.
+See `README.md`, `CHANGELOG.md`, and `docs/ARCHITECTURE.md` for details.

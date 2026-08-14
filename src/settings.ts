@@ -89,7 +89,7 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Maximum output tokens")
-      .setDesc(String(this.host.settings.maxTokens))
+      .setDesc(`${this.host.settings.maxTokens} per request. Incomplete discussions can be continued; incomplete edits may offer one bounded higher-budget retry.`)
       .addSlider((slider) => slider
         .setLimits(512, 16_384, 512)
         .setDynamicTooltip()
@@ -102,7 +102,7 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Temperature")
-      .setDesc(this.host.settings.temperature.toFixed(1))
+      .setDesc(`${this.host.settings.temperature.toFixed(1)} · requests explicitly use non-thinking mode so this setting is effective`)
       .addSlider((slider) => slider
         .setLimits(0, 1.5, 0.1)
         .setDynamicTooltip()

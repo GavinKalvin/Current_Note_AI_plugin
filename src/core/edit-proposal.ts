@@ -10,6 +10,7 @@ import type {
 export type EditProposalErrorCode =
   | "invalid-json"
   | "invalid-schema"
+  | "needs-segmentation"
   | "too-many-operations"
   | "ambiguous-anchor"
   | "missing-anchor"
@@ -57,6 +58,24 @@ function requireString(
   return value;
 }
 
+function requireStringArray(
+  record: Record<string, unknown>,
+  key: string,
+  maxItems: number,
+  allowEmpty: boolean,
+): string[] {
+  const value = record[key];
+  if (!Array.isArray(value) || value.length > maxItems || (!allowEmpty && value.length === 0)) {
+    throw new EditProposalError("invalid-schema", `Field \"${key}\" is missing or invalid.`);
+  }
+  return value.map((item) => {
+    if (typeof item !== "string" || item.length === 0 || item.length > 1_000) {
+      throw new EditProposalError("invalid-schema", `Field \"${key}\" contains an invalid item.`);
+    }
+    return item;
+  });
+}
+
 function parsePayload(raw: string, limits: EditProposalLimits): EditProposalPayload {
   let value: unknown;
   try {
@@ -65,7 +84,7 @@ function parsePayload(raw: string, limits: EditProposalLimits): EditProposalPayl
     throw new EditProposalError("invalid-json", "The provider did not return valid JSON.");
   }
 
-  if (!isRecord(value) || value.schemaVersion !== 1) {
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) {
     throw new EditProposalError(
       "invalid-schema",
       "The edit proposal schema version is missing or unsupported.",
@@ -73,6 +92,38 @@ function parsePayload(raw: string, limits: EditProposalLimits): EditProposalPayl
   }
 
   const summary = requireString(value, "summary", 4_000);
+  let coveredTargets: string[] | undefined;
+  let uncoveredTargets: string[] | undefined;
+  if (value.schemaVersion === 2) {
+    if (value.status !== "complete" && value.status !== "needs_segmentation") {
+      throw new EditProposalError("invalid-schema", "The edit proposal status is missing or invalid.");
+    }
+    coveredTargets = requireStringArray(value, "coveredTargets", 100, true);
+    uncoveredTargets = requireStringArray(
+      value,
+      "uncoveredTargets",
+      100,
+      value.status === "complete",
+    );
+    if (value.status === "needs_segmentation") {
+      if (!Array.isArray(value.operations) || value.operations.length !== 0) {
+        throw new EditProposalError(
+          "invalid-schema",
+          "A needs_segmentation response must not contain partial edit operations.",
+        );
+      }
+      throw new EditProposalError(
+        "needs-segmentation",
+        `${summary} Remaining scope: ${uncoveredTargets.join("; ")}`,
+      );
+    }
+    if (uncoveredTargets.length !== 0) {
+      throw new EditProposalError(
+        "invalid-schema",
+        "A complete edit proposal cannot contain uncovered targets.",
+      );
+    }
+  }
   if (!Array.isArray(value.operations) || value.operations.length === 0) {
     throw new EditProposalError(
       "invalid-schema",
@@ -105,7 +156,14 @@ function parsePayload(raw: string, limits: EditProposalLimits): EditProposalPayl
     };
   });
 
-  return { schemaVersion: 1, summary, operations };
+  return {
+    schemaVersion: value.schemaVersion,
+    status: value.schemaVersion === 2 ? "complete" : undefined,
+    summary,
+    coveredTargets,
+    uncoveredTargets,
+    operations,
+  };
 }
 
 function locateUniqueAnchor(baseText: string, operation: EditOperationInput): ValidatedEditOperation {

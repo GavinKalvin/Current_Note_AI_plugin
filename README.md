@@ -2,7 +2,7 @@
 
 Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 分析、讨论并安全修改当前 Markdown 笔记。
 
-当前版本：**v0.1.4**。最低 Obsidian 版本为 **1.13.0**，仅支持桌面端。
+当前版本：**v0.1.5**。最低 Obsidian 版本为 **1.13.0**，仅支持桌面端。
 
 它的核心原则不是“让模型直接编辑文件”，而是把 AI 修改变成可审阅的本地事务：模型只返回结构化提案；插件在本地验证、展示差异，并且只在用户点击 **Apply selected** 后写入。
 
@@ -11,6 +11,8 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 分析、讨�
 - Ribbon 按钮和命令面板打开右侧聊天栏。
 - iMessage 风格的用户/AI 对话气泡。
 - AI 回复支持安全的 Markdown 排版，包括标题、列表、表格、引用、链接和代码块；原始 HTML 与自动嵌入被禁用。
+- DeepSeek 请求显式使用 non-thinking 模式，避免默认隐藏推理不可预测地消耗普通问答与编辑 JSON 的输出预算。
+- 回答达到输出上限时会单独标记为未完成，并提供最多两次、由用户触发的 **Continue**；警告状态不会写入模型正文。
 - 输入框支持 Enter、Command+Enter 或 Ctrl+Enter 发送，Shift+Enter 换行，并避免中文输入法组词确认时误发。
 - 侧栏顶部可直接选择 DeepSeek 模型，并可在不发送笔记内容的前提下刷新 `/models` 列表。
 - 侧栏顶部的 **History** 按钮按最近更新时间列出会话；首条用户消息会在本地自动生成会话标题。
@@ -18,7 +20,8 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 分析、讨�
 - 不展开 Wiki 链接、嵌入、附件、Dataview 结果或其他笔记。
 - 普通 **Send** 只讨论，永远不写文件。
 - **Propose changes** 请求 DeepSeek 返回版本化 JSON 编辑提案。
-- 本地拒绝缺失、重复、重叠、过大、截断或格式错误的提案。
+- 本地拒绝缺失、重复、重叠、过大、截断、格式错误或声明 `needs_segmentation` 的提案。
+- 不完整编辑可由用户发起一次更高 token 预算的完整重试；半截 JSON 永远不会续接或局部应用。
 - 逐项查看和勾选修改；Apply 前再次核对 leaf、文件身份、路径和全文快照。
 - 只在文档仍等于 AI 修改后的版本时允许 **Revert AI edit**。
 - 最近 50 个会话保存在插件本地数据中；编辑提案和回滚副本仍只保存在内存中。
@@ -27,7 +30,7 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 分析、讨�
 
 ### 从 Release 安装（推荐）
 
-1. 从 GitHub Releases 下载 `current-note-ai-0.1.4.zip`。
+1. 从 GitHub Releases 下载 `current-note-ai-0.1.5.zip`。
 2. 解压到 Vault 的 `.obsidian/plugins/current-note-ai/`。
 3. 确认目录中包含 `main.js`、`manifest.json`、`styles.css`。
 4. 在 **Settings → Third-party plugins** 中启用 **Current Note AI**。
@@ -48,6 +51,8 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 分析、讨�
 3. 点击 **Test connection**，确认 `/models` 能返回当前可用模型并缓存到本地设置。
 4. 在设置页输入模型名，或在侧栏顶部的 **DeepSeek** 下拉框中选择模型；刷新按钮只查询模型列表，不发送笔记内容。
 5. 默认模型为 `deepseek-v4-flash`，但模型名应以测试返回结果为准。
+
+普通 Discussion 与 Edit 请求都显式关闭 DeepSeek thinking。设置中的 **Maximum output tokens** 是单次请求预算；Discussion 的 Continue 会产生新的计费请求，Edit 的更高预算重试也会产生新的计费请求。
 
 普通 `data.json` 保存 secret 的名称引用、非敏感偏好和本地会话历史，不保存 API key 本身。会话历史包含用户消息和 DeepSeek 回复，因此应按笔记内容同等保护该文件。
 
@@ -90,12 +95,15 @@ flowchart LR
 
 ## 编辑安全协议
 
-DeepSeek 只能返回以下形状的 JSON：
+DeepSeek 完整编辑只能返回以下形状的 JSON：
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "status": "complete",
   "summary": "修改摘要",
+  "coveredTargets": ["已覆盖的修改目标"],
+  "uncoveredTargets": [],
   "operations": [
     {
       "id": "edit-1",
@@ -107,12 +115,15 @@ DeepSeek 只能返回以下形状的 JSON：
 }
 ```
 
+如果完整提案无法安全放进一次响应，模型必须返回 `status: "needs_segmentation"`、空 `operations` 和明确的 `uncoveredTargets`。插件不会把这种响应或任何截断 JSON 创建成可应用提案。
+
 插件不接受模型提供的文件路径、offset、命令或工具调用。Apply 瞬间只要笔记发生过任何变化，旧提案就会失效，不会自动重基或模糊匹配。
 
 ## MVP 限制
 
 - 仅桌面端和 Markdown 标签页。
 - 使用 Obsidian `requestUrl` 的完整响应模式，暂不逐 token 流式显示。
+- Thinking 模式暂不开放为用户选项；复杂分析仍使用显式 non-thinking 策略，后续需用真实质量数据决定是否增加 Deep 模式。
 - 不支持 PDF、Canvas、EPUB、多文件编辑、全库检索、历史导出或跨设备会话合并。
 - 单次笔记正文上限为 1,500,000 字符；超限时拒绝发送，不会静默截断。
 - 最多保留最近 50 个会话，每个会话最多持久化最近 200 条用户/助手消息。

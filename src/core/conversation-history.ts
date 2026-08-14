@@ -3,6 +3,7 @@ import type { ConversationMessage, SavedConversation } from "../types";
 export const MAX_SAVED_CONVERSATIONS = 50;
 const MAX_SAVED_MESSAGES = 200;
 const MAX_TITLE_CHARACTERS = 36;
+const LEGACY_OUTPUT_LIMIT_SUFFIX = "\n\n[Response stopped because the output limit was reached.]";
 
 export function createConversationTitle(content: string, fallbackNoteName: string): string {
   const normalized = content
@@ -80,7 +81,46 @@ function sanitizeMessage(value: unknown): ConversationMessage | null {
   const role = value.role;
   if (!id || content === null || createdAt === null) return null;
   if (role !== "user" && role !== "assistant") return null;
-  return { id, role, content, createdAt };
+  const migratedLegacyLimit = role === "assistant" && content.endsWith(LEGACY_OUTPUT_LIMIT_SUFFIX);
+  const sanitizedContent = migratedLegacyLimit
+    ? content.slice(0, -LEGACY_OUTPUT_LIMIT_SUFFIX.length)
+    : content;
+  const requestKind = value.requestKind === "discussion" || value.requestKind === "edit"
+    ? value.requestKind
+    : migratedLegacyLimit ? "discussion" : undefined;
+  const finishReason = readString(value.finishReason, 100, true)
+    ?? (migratedLegacyLimit ? "length" : undefined);
+  const generationState = value.generationState === "complete" || value.generationState === "incomplete"
+    ? value.generationState
+    : migratedLegacyLimit ? "incomplete" : undefined;
+  const noteHash = readString(value.noteHash, 200, true) ?? undefined;
+  const continuationCount = readNonNegativeInteger(value.continuationCount, 100);
+  const usage = sanitizeUsage(value.usage);
+
+  return {
+    id,
+    role,
+    content: sanitizedContent,
+    createdAt,
+    requestKind,
+    finishReason,
+    generationState,
+    noteHash,
+    continuationCount,
+    usage,
+  };
+}
+
+function sanitizeUsage(value: unknown): ConversationMessage["usage"] {
+  if (!isRecord(value)) return undefined;
+  const usage = {
+    promptTokens: readNonNegativeNumber(value.promptTokens),
+    completionTokens: readNonNegativeNumber(value.completionTokens),
+    reasoningTokens: readNonNegativeNumber(value.reasoningTokens),
+    visibleOutputTokens: readNonNegativeNumber(value.visibleOutputTokens),
+    totalTokens: readNonNegativeNumber(value.totalTokens),
+  };
+  return Object.values(usage).some((item) => item !== undefined) ? usage : undefined;
 }
 
 function truncateTitle(value: string): string {
@@ -102,4 +142,16 @@ function readTimestamp(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? value
     : null;
+}
+
+function readNonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function readNonNegativeInteger(value: unknown, max: number): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max
+    ? value
+    : undefined;
 }

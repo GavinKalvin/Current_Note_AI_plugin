@@ -1,9 +1,18 @@
 import { ItemView, MarkdownView, Notice, WorkspaceLeaf } from "obsidian";
 import { compileSelectedOperations, EditProposalError, validateEditProposal } from "./core/edit-proposal";
 import { createConversationTitle } from "./core/conversation-history";
+import {
+  MAX_DISCUSSION_CONTINUATIONS,
+  nextEditRetryBudget,
+  trimExactContinuationOverlap,
+} from "./core/completion";
 import { shouldSubmitComposer } from "./core/composer-shortcut";
 import { renderAssistantMarkdown } from "./core/markdown-rendering";
-import { buildDiscussionMessages, buildEditMessages } from "./core/prompt";
+import {
+  buildDiscussionContinuationMessages,
+  buildDiscussionMessages,
+  buildEditMessages,
+} from "./core/prompt";
 import type { BoundMarkdownDocument } from "./context";
 import { CurrentDocumentError } from "./context";
 import { FullNoteConsentModal } from "./modals";
@@ -26,6 +35,16 @@ interface PendingProposal {
   request: string;
 }
 
+interface EditRetryState {
+  snapshot: DocumentSnapshot;
+  history: ConversationMessage[];
+  request: string;
+  maxTokensUsed: number;
+  nextMaxTokens: number | null;
+  retryAttempted: boolean;
+  reason: string;
+}
+
 interface AppliedChange {
   binding: BoundMarkdownDocument;
   beforeText: string;
@@ -36,6 +55,7 @@ export class CurrentNoteAiView extends ItemView {
   private bound: BoundMarkdownDocument | null = null;
   private messages: ConversationMessage[] = [];
   private pendingProposal: PendingProposal | null = null;
+  private editRetry: EditRetryState | null = null;
   private lastApplied: AppliedChange | null = null;
   private draft = "";
   private errorMessage = "";
@@ -81,6 +101,7 @@ export class CurrentNoteAiView extends ItemView {
     this.requestGeneration += 1;
     this.messages = [];
     this.pendingProposal = null;
+    this.editRetry = null;
     this.lastApplied = null;
     this.activeConversationId = null;
   }
@@ -114,7 +135,7 @@ export class CurrentNoteAiView extends ItemView {
     }
 
     const timeline = contentEl.createDiv({ cls: "current-note-ai-timeline" });
-    if (this.messages.length === 0 && !this.pendingProposal) {
+    if (this.messages.length === 0 && !this.pendingProposal && !this.editRetry) {
       const empty = timeline.createDiv({ cls: "current-note-ai-empty" });
       empty.createDiv({ cls: "current-note-ai-empty-icon", text: "✦" });
       empty.createEl("strong", { text: "Discuss the note in front of you" });
@@ -125,6 +146,7 @@ export class CurrentNoteAiView extends ItemView {
 
     for (const message of this.messages) this.renderMessage(timeline, message);
     if (this.busy) this.renderTypingBubble(timeline);
+    if (this.editRetry) this.renderEditRetry(timeline, this.editRetry);
     if (this.pendingProposal) this.renderProposal(timeline, this.pendingProposal);
 
     this.renderComposer(contentEl);
@@ -249,6 +271,7 @@ export class CurrentNoteAiView extends ItemView {
     this.busy = false;
     this.messages = conversation.messages.map((message) => ({ ...message }));
     this.pendingProposal = null;
+    this.editRetry = null;
     this.lastApplied = null;
     this.draft = "";
     this.errorMessage = "";
@@ -335,13 +358,50 @@ export class CurrentNoteAiView extends ItemView {
     const row = container.createDiv({
       cls: `current-note-ai-message-row is-${message.role}`,
     });
-    const bubble = row.createDiv({ cls: "current-note-ai-bubble" });
+    const group = row.createDiv({ cls: "current-note-ai-message-group" });
+    const bubble = group.createDiv({ cls: "current-note-ai-bubble" });
     if (message.role === "assistant") {
       bubble.addClass("current-note-ai-markdown", "markdown-rendered");
       bubble.innerHTML = renderAssistantMarkdown(message.content);
+      this.renderMessageMetadata(group, message);
     } else {
       bubble.setText(message.content);
     }
+  }
+
+  private renderMessageMetadata(container: HTMLElement, message: ConversationMessage): void {
+    if (message.generationState !== "incomplete") return;
+
+    const metadata = container.createDiv({ cls: "current-note-ai-message-metadata" });
+    const reason = message.finishReason === "length"
+      ? "Incomplete · output limit reached"
+      : `Incomplete · finish reason: ${message.finishReason ?? "unknown"}`;
+    metadata.createSpan({ cls: "current-note-ai-incomplete-label", text: reason });
+
+    const completionTokens = message.usage?.completionTokens;
+    if (completionTokens !== undefined) {
+      metadata.createSpan({ text: `${completionTokens.toLocaleString()} generated tokens` });
+    }
+
+    if (!this.canContinueMessage(message)) return;
+    const continueButton = metadata.createEl("button", {
+      cls: "current-note-ai-continue-button",
+      text: "Continue",
+      attr: {
+        title: `Send a new DeepSeek request with up to ${this.plugin.settings.maxTokens.toLocaleString()} additional tokens`,
+      },
+    });
+    continueButton.addEventListener("click", () => void this.continueDiscussion(message));
+  }
+
+  private canContinueMessage(message: ConversationMessage): boolean {
+    return !this.busy
+      && !this.hasHistoryBindingMismatch()
+      && this.messages.at(-1)?.id === message.id
+      && message.requestKind === "discussion"
+      && message.finishReason === "length"
+      && typeof message.noteHash === "string"
+      && (message.continuationCount ?? 0) < MAX_DISCUSSION_CONTINUATIONS;
   }
 
   private renderTypingBubble(container: HTMLElement): void {
@@ -350,6 +410,39 @@ export class CurrentNoteAiView extends ItemView {
     bubble.createSpan();
     bubble.createSpan();
     bubble.createSpan();
+  }
+
+  private renderEditRetry(container: HTMLElement, retry: EditRetryState): void {
+    const card = container.createDiv({ cls: "current-note-ai-recovery" });
+    card.createEl("strong", { text: "Edit proposal incomplete" });
+    card.createEl("p", { text: retry.reason });
+    if (retry.nextMaxTokens !== null && !retry.retryAttempted) {
+      card.createDiv({
+        cls: "current-note-ai-recovery-cost",
+        text: "Retrying starts a new paid API request, may take longer, and may produce a different proposal.",
+      });
+    }
+    const actions = card.createDiv({ cls: "current-note-ai-recovery-actions" });
+
+    const revise = actions.createEl("button", { text: "Revise request" });
+    revise.disabled = this.busy;
+    revise.addEventListener("click", () => {
+      this.draft = retry.request;
+      this.editRetry = null;
+      this.render();
+    });
+
+    if (retry.nextMaxTokens !== null && !retry.retryAttempted) {
+      const retryButton = actions.createEl("button", {
+        cls: "mod-cta",
+        text: `Retry with ${retry.nextMaxTokens.toLocaleString()}`,
+        attr: {
+          title: "Starts a new paid API request. The regenerated proposal may differ.",
+        },
+      });
+      retryButton.disabled = this.busy;
+      retryButton.addEventListener("click", () => void this.retryEditProposal(retry));
+    }
   }
 
   private renderProposal(container: HTMLElement, proposal: PendingProposal): void {
@@ -480,6 +573,7 @@ export class CurrentNoteAiView extends ItemView {
     this.busy = false;
     this.messages = [];
     this.pendingProposal = null;
+    this.editRetry = null;
     this.lastApplied = null;
     this.errorMessage = "";
     this.draft = "";
@@ -526,6 +620,7 @@ export class CurrentNoteAiView extends ItemView {
   private resetConversationState(): void {
     this.messages = [];
     this.pendingProposal = null;
+    this.editRetry = null;
     this.lastApplied = null;
     this.draft = "";
     this.resetConversationMetadata();
@@ -584,20 +679,97 @@ export class CurrentNoteAiView extends ItemView {
       this.render();
 
       const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
-        messages: buildDiscussionMessages(snapshot.text, history, request),
+        messages: buildDiscussionMessages(
+          snapshot.text,
+          history,
+          request,
+          this.plugin.settings.maxTokens,
+        ),
         options: {
           model: this.plugin.settings.model,
           maxTokens: this.plugin.settings.maxTokens,
           temperature: this.plugin.settings.temperature,
+          thinking: "disabled",
           responseFormat: "text",
         },
       });
       if (generation !== this.requestGeneration) return;
 
-      const suffix = response.finishReason === "length"
-        ? "\n\n[Response stopped because the output limit was reached.]"
-        : "";
-      this.messages.push(this.newMessage("assistant", `${response.content}${suffix}`));
+      this.messages.push(this.newMessage("assistant", response.content, {
+        requestKind: "discussion",
+        finishReason: response.finishReason,
+        generationState: response.finishReason === "stop" ? "complete" : "incomplete",
+        usage: response.usage,
+        noteHash: snapshot.hash,
+        continuationCount: 0,
+      }));
+      await this.persistConversation(snapshot);
+    } catch (error) {
+      if (generation === null || generation === this.requestGeneration) {
+        this.errorMessage = this.describeError(error);
+      }
+    } finally {
+      if (generation === null || generation === this.requestGeneration) {
+        this.busy = false;
+        this.render();
+      }
+    }
+  }
+
+  private async continueDiscussion(incompleteMessage: ConversationMessage): Promise<void> {
+    if (!this.canContinueMessage(incompleteMessage)) return;
+    let generation: number | null = null;
+
+    try {
+      if (!await this.ensureConsent()) return;
+      const snapshot = this.captureCurrentSnapshot();
+      if (incompleteMessage.noteHash && incompleteMessage.noteHash !== snapshot.hash) {
+        throw new CurrentDocumentError(
+          "The note changed after this incomplete response. Ask again so DeepSeek uses the current text.",
+        );
+      }
+
+      const history = this.messages.slice();
+      this.errorMessage = "";
+      this.busy = true;
+      generation = ++this.requestGeneration;
+      this.render();
+
+      const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
+        messages: buildDiscussionContinuationMessages(
+          snapshot.text,
+          history,
+          this.plugin.settings.maxTokens,
+        ),
+        options: {
+          model: this.plugin.settings.model,
+          maxTokens: this.plugin.settings.maxTokens,
+          temperature: this.plugin.settings.temperature,
+          thinking: "disabled",
+          responseFormat: "text",
+        },
+      });
+      if (generation !== this.requestGeneration) return;
+
+      const trimmedContent = trimExactContinuationOverlap(
+        incompleteMessage.content,
+        response.content,
+      );
+      if (!trimmedContent.trim()) {
+        throw new ProviderRequestError(
+          "empty-continuation",
+          "DeepSeek repeated the previous ending without adding new content. You can try Continue again.",
+        );
+      }
+      this.messages.push(this.newMessage("user", "Continue"));
+      this.messages.push(this.newMessage("assistant", trimmedContent, {
+        requestKind: "discussion",
+        finishReason: response.finishReason,
+        generationState: response.finishReason === "stop" ? "complete" : "incomplete",
+        usage: response.usage,
+        noteHash: snapshot.hash,
+        continuationCount: (incompleteMessage.continuationCount ?? 0) + 1,
+      }));
       await this.persistConversation(snapshot);
     } catch (error) {
       if (generation === null || generation === this.requestGeneration) {
@@ -624,40 +796,190 @@ export class CurrentNoteAiView extends ItemView {
       this.draft = "";
       this.errorMessage = "";
       this.pendingProposal = null;
+      this.editRetry = null;
       this.busy = true;
       generation = ++this.requestGeneration;
       await this.persistConversation(snapshot);
       this.render();
 
       const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
-        messages: buildEditMessages(snapshot.text, history, request),
+        messages: buildEditMessages(
+          snapshot.text,
+          history,
+          request,
+          this.plugin.settings.maxTokens,
+        ),
         options: {
           model: this.plugin.settings.model,
           maxTokens: this.plugin.settings.maxTokens,
           temperature: this.plugin.settings.temperature,
+          thinking: "disabled",
           responseFormat: "json",
         },
       });
       if (generation !== this.requestGeneration) return;
       if (response.finishReason !== "stop") {
-        throw new ProviderRequestError(
-          "incomplete-response",
-          `DeepSeek ended the edit response with finish_reason=${response.finishReason}; no editable proposal was created.`,
+        this.editRetry = this.createEditRetryState(
+          snapshot,
+          history,
+          request,
+          this.plugin.settings.maxTokens,
+          false,
+          `DeepSeek ended with finish_reason=${response.finishReason}. The partial JSON was discarded and cannot be applied.`,
         );
+        return;
       }
 
-      const candidate = validateEditProposal(response.content, snapshot.text, {
-        maxOperations: this.plugin.settings.maxOperations,
-        maxChangeRatio: this.plugin.settings.maxChangeRatio,
-      });
+      let candidate: EditProposalCandidate;
+      try {
+        candidate = validateEditProposal(response.content, snapshot.text, {
+          maxOperations: this.plugin.settings.maxOperations,
+          maxChangeRatio: this.plugin.settings.maxChangeRatio,
+        });
+      } catch (error) {
+        if (error instanceof EditProposalError && error.code === "needs-segmentation") {
+          this.editRetry = this.createEditRetryState(
+            snapshot,
+            history,
+            request,
+            this.plugin.settings.maxTokens,
+            false,
+            error.message,
+          );
+          return;
+        }
+        throw error;
+      }
       this.pendingProposal = {
         candidate,
         snapshot,
         selectedIds: new Set(candidate.operations.map((operation) => operation.id)),
         request,
       };
-      this.messages.push(this.newMessage("assistant", candidate.summary));
+      this.messages.push(this.newMessage("assistant", candidate.summary, {
+        requestKind: "edit",
+        finishReason: response.finishReason,
+        generationState: "complete",
+        usage: response.usage,
+        noteHash: snapshot.hash,
+      }));
       await this.persistConversation(snapshot);
+    } catch (error) {
+      if (generation === null || generation === this.requestGeneration) {
+        this.errorMessage = this.describeError(error);
+      }
+    } finally {
+      if (generation === null || generation === this.requestGeneration) {
+        this.busy = false;
+        this.render();
+      }
+    }
+  }
+
+  private createEditRetryState(
+    snapshot: DocumentSnapshot,
+    history: ConversationMessage[],
+    request: string,
+    maxTokensUsed: number,
+    retryAttempted: boolean,
+    reason: string,
+  ): EditRetryState {
+    return {
+      snapshot,
+      history: history.map((message) => ({ ...message })),
+      request,
+      maxTokensUsed,
+      nextMaxTokens: retryAttempted ? null : nextEditRetryBudget(maxTokensUsed),
+      retryAttempted,
+      reason,
+    };
+  }
+
+  private async retryEditProposal(retry: EditRetryState): Promise<void> {
+    if (this.busy || retry.retryAttempted || retry.nextMaxTokens === null) return;
+    let generation: number | null = null;
+    const retryBudget = retry.nextMaxTokens;
+
+    try {
+      if (!await this.ensureConsent()) return;
+      const currentSnapshot = this.captureCurrentSnapshot();
+      if (currentSnapshot.hash !== retry.snapshot.hash) {
+        throw new CurrentDocumentError(
+          "The note changed after the incomplete edit response. Revise and resend the request against the current note.",
+        );
+      }
+
+      this.errorMessage = "";
+      this.pendingProposal = null;
+      this.editRetry = null;
+      this.busy = true;
+      generation = ++this.requestGeneration;
+      this.render();
+
+      const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
+        messages: buildEditMessages(
+          retry.snapshot.text,
+          retry.history,
+          retry.request,
+          retryBudget,
+        ),
+        options: {
+          model: this.plugin.settings.model,
+          maxTokens: retryBudget,
+          temperature: this.plugin.settings.temperature,
+          thinking: "disabled",
+          responseFormat: "json",
+        },
+      });
+      if (generation !== this.requestGeneration) return;
+
+      if (response.finishReason !== "stop") {
+        this.editRetry = this.createEditRetryState(
+          retry.snapshot,
+          retry.history,
+          retry.request,
+          retryBudget,
+          true,
+          `The ${retryBudget.toLocaleString()}-token retry also ended with finish_reason=${response.finishReason}. Narrow the edit request before trying again.`,
+        );
+        return;
+      }
+
+      let candidate: EditProposalCandidate;
+      try {
+        candidate = validateEditProposal(response.content, retry.snapshot.text, {
+          maxOperations: this.plugin.settings.maxOperations,
+          maxChangeRatio: this.plugin.settings.maxChangeRatio,
+        });
+      } catch (error) {
+        if (error instanceof EditProposalError && error.code === "needs-segmentation") {
+          this.editRetry = this.createEditRetryState(
+            retry.snapshot,
+            retry.history,
+            retry.request,
+            retryBudget,
+            true,
+            `${error.message} Narrow the edit request before trying again.`,
+          );
+          return;
+        }
+        throw error;
+      }
+
+      this.pendingProposal = {
+        candidate,
+        snapshot: retry.snapshot,
+        selectedIds: new Set(candidate.operations.map((operation) => operation.id)),
+        request: retry.request,
+      };
+      this.messages.push(this.newMessage("assistant", candidate.summary, {
+        requestKind: "edit",
+        finishReason: response.finishReason,
+        generationState: "complete",
+        usage: response.usage,
+        noteHash: retry.snapshot.hash,
+      }));
+      await this.persistConversation(retry.snapshot);
     } catch (error) {
       if (generation === null || generation === this.requestGeneration) {
         this.errorMessage = this.describeError(error);
@@ -757,6 +1079,7 @@ export class CurrentNoteAiView extends ItemView {
   private newMessage(
     role: ConversationMessage["role"],
     content: string,
+    metadata: Partial<Omit<ConversationMessage, "id" | "role" | "content" | "createdAt">> = {},
   ): ConversationMessage {
     this.messageSequence += 1;
     return {
@@ -764,6 +1087,7 @@ export class CurrentNoteAiView extends ItemView {
       role,
       content,
       createdAt: Date.now(),
+      ...metadata,
     };
   }
 

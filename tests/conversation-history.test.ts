@@ -61,4 +61,29 @@ describe("conversation history persistence", () => {
     expect(result.map((item) => item.id)).toEqual(["older", "active"]);
     expect(result).toHaveLength(2);
   });
+
+  it("preserves safe generation metadata and migrates legacy limit warnings", () => {
+    const input = conversation("legacy", 10);
+    input.messages = [{
+      id: "assistant-legacy",
+      role: "assistant",
+      content: "Partial answer\n\n[Response stopped because the output limit was reached.]",
+      createdAt: 10,
+      usage: {
+        promptTokens: 100,
+        completionTokens: 4_096,
+        reasoningTokens: 1_024,
+        visibleOutputTokens: 3_072,
+        totalTokens: 4_196,
+      },
+    }];
+
+    const message = sanitizeConversationHistory([input])[0]?.messages[0];
+
+    expect(message?.content).toBe("Partial answer");
+    expect(message?.finishReason).toBe("length");
+    expect(message?.generationState).toBe("incomplete");
+    expect(message?.requestKind).toBe("discussion");
+    expect(message?.usage?.reasoningTokens).toBe(1_024);
+  });
 });

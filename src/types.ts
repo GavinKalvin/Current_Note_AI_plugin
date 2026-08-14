@@ -9,6 +9,7 @@ export interface CompletionOptions {
   model: string;
   maxTokens: number;
   temperature: number;
+  thinking: "enabled" | "disabled";
   responseFormat: "text" | "json";
 }
 
@@ -20,6 +21,8 @@ export interface CompletionRequest {
 export interface CompletionUsage {
   promptTokens?: number;
   completionTokens?: number;
+  reasoningTokens?: number;
+  visibleOutputTokens?: number;
   totalTokens?: number;
 }
 
@@ -44,6 +47,12 @@ export interface ConversationMessage {
   role: "user" | "assistant" | "system";
   content: string;
   createdAt: number;
+  requestKind?: "discussion" | "edit";
+  finishReason?: string;
+  generationState?: "complete" | "incomplete";
+  usage?: CompletionUsage;
+  noteHash?: string;
+  continuationCount?: number;
 }
 
 export interface SavedConversation {
@@ -71,8 +80,11 @@ export interface EditOperationInput {
 }
 
 export interface EditProposalPayload {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
+  status?: "complete";
   summary: string;
+  coveredTargets?: string[];
+  uncoveredTargets?: string[];
   operations: EditOperationInput[];
 }
 
