@@ -8,7 +8,8 @@
     "dev": "node esbuild.config.mjs",
     "build": "tsc --noEmit && node esbuild.config.mjs production",
     "test": "vitest run",
-    "check": "tsc --noEmit && vitest run"
+    "check": "tsc --noEmit && vitest run",
+    "verify:release": "node scripts/verify-release.mjs"
   },
   "dependencies": {
     "markdown-it": "^15.0.0"

@@ -43,6 +43,18 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
     super(app, host);
   }
 
+  private async saveWithNotice(): Promise<boolean> {
+    try {
+      await this.host.saveSettings();
+      return true;
+    } catch (error) {
+      new Notice(error instanceof Error
+        ? `Current Note AI could not save settings: ${error.message}`
+        : "Current Note AI could not save settings.");
+      return false;
+    }
+  }
+
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
@@ -56,7 +68,7 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         .setValue(this.host.settings.secretId)
         .onChange(async (value) => {
           this.host.settings.secretId = value;
-          await this.host.saveSettings();
+          await this.saveWithNotice();
         }));
 
     new Setting(containerEl)
@@ -67,7 +79,7 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         .setValue(this.host.settings.model)
         .onChange(async (value) => {
           this.host.settings.model = value.trim();
-          await this.host.saveSettings();
+          await this.saveWithNotice();
         }));
 
     new Setting(containerEl)
@@ -87,7 +99,7 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
           }
         }));
 
-    new Setting(containerEl)
+    const maxTokensSetting = new Setting(containerEl)
       .setName("Maximum output tokens")
       .setDesc(`${this.host.settings.maxTokens} per request. Incomplete discussions can be continued; incomplete edits may offer one bounded higher-budget retry.`)
       .addSlider((slider) => slider
@@ -96,11 +108,11 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         .setValue(this.host.settings.maxTokens)
         .onChange(async (value) => {
           this.host.settings.maxTokens = value;
-          await this.host.saveSettings();
-          this.display();
+          maxTokensSetting.setDesc(`${value} per request. Incomplete discussions can be continued; incomplete edits may offer one bounded higher-budget retry.`);
+          await this.saveWithNotice();
         }));
 
-    new Setting(containerEl)
+    const temperatureSetting = new Setting(containerEl)
       .setName("Temperature")
       .setDesc(`${this.host.settings.temperature.toFixed(1)} · requests explicitly use non-thinking mode so this setting is effective`)
       .addSlider((slider) => slider
@@ -109,13 +121,13 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         .setValue(this.host.settings.temperature)
         .onChange(async (value) => {
           this.host.settings.temperature = value;
-          await this.host.saveSettings();
-          this.display();
+          temperatureSetting.setDesc(`${value.toFixed(1)} · requests explicitly use non-thinking mode so this setting is effective`);
+          await this.saveWithNotice();
         }));
 
     new Setting(containerEl).setName("Edit safety").setHeading();
 
-    new Setting(containerEl)
+    const maxOperationsSetting = new Setting(containerEl)
       .setName("Maximum operations")
       .setDesc(String(this.host.settings.maxOperations))
       .addSlider((slider) => slider
@@ -124,11 +136,11 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         .setValue(this.host.settings.maxOperations)
         .onChange(async (value) => {
           this.host.settings.maxOperations = value;
-          await this.host.saveSettings();
-          this.display();
+          maxOperationsSetting.setDesc(String(value));
+          await this.saveWithNotice();
         }));
 
-    new Setting(containerEl)
+    const maxChangeRatioSetting = new Setting(containerEl)
       .setName("Maximum changed portion")
       .setDesc(`${Math.round(this.host.settings.maxChangeRatio * 100)}% of the note`)
       .addSlider((slider) => slider
@@ -137,8 +149,8 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         .setValue(this.host.settings.maxChangeRatio)
         .onChange(async (value) => {
           this.host.settings.maxChangeRatio = value;
-          await this.host.saveSettings();
-          this.display();
+          maxChangeRatioSetting.setDesc(`${Math.round(value * 100)}% of the note`);
+          await this.saveWithNotice();
         }));
 
     new Setting(containerEl)
@@ -148,8 +160,9 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         .setButtonText("Reset consent")
         .onClick(async () => {
           this.host.settings.consentAcknowledged = false;
-          await this.host.saveSettings();
-          new Notice("Consent will be requested again before sending note content.");
+          if (await this.saveWithNotice()) {
+            new Notice("Consent will be requested again before sending note content.");
+          }
         }));
   }
 }

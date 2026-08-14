@@ -1,9 +1,11 @@
-import { MarkdownView, Notice, Plugin } from "obsidian";
+import { MarkdownView, Notice, Plugin, TFile } from "obsidian";
 import { CurrentDocumentGate } from "./context";
 import {
-  sanitizeConversationHistory,
+  renameConversationHistoryNote,
   upsertConversationHistory,
 } from "./core/conversation-history";
+import { RevisionedSaveCoordinator } from "./core/persistence";
+import { sanitizeSettings } from "./core/settings-sanitization";
 import { DeepSeekAdapter } from "./provider/deepseek";
 import {
   CurrentNoteAiSettingTab,
@@ -14,6 +16,20 @@ import {
 import { CURRENT_NOTE_AI_VIEW, CurrentNoteAiView } from "./view";
 import type { SavedConversation } from "./types";
 
+function cloneSettings(settings: CurrentNoteAiSettings): CurrentNoteAiSettings {
+  return {
+    ...settings,
+    availableModels: [...settings.availableModels],
+    conversationHistory: settings.conversationHistory.map((conversation) => ({
+      ...conversation,
+      messages: conversation.messages.map((message) => ({
+        ...message,
+        usage: message.usage ? { ...message.usage } : undefined,
+      })),
+    })),
+  };
+}
+
 export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost {
   settings: CurrentNoteAiSettings = {
     ...DEFAULT_SETTINGS,
@@ -22,6 +38,10 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
   };
   readonly provider = new DeepSeekAdapter();
   readonly documentGate = new CurrentDocumentGate(this.app);
+  private readonly saveCoordinator = new RevisionedSaveCoordinator<CurrentNoteAiSettings>({
+    getSnapshot: () => cloneSettings(this.settings),
+    writeSnapshot: (snapshot) => this.saveData(snapshot),
+  });
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -56,34 +76,45 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
       this.notifyOpenViews();
     }));
     this.registerEvent(this.app.workspace.on("editor-change", (_editor, info) => {
-      if (info instanceof MarkdownView) this.notifyOpenViews();
+      if (info instanceof MarkdownView) this.notifyEditorChanged(info);
+    }));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      if (file instanceof TFile) {
+        void this.handleFileRename(file, oldPath).catch((error: unknown) => {
+          new Notice(error instanceof Error
+            ? `Current Note AI updated the renamed note in memory but could not save it: ${error.message}`
+            : "Current Note AI could not save renamed-note history metadata.");
+        });
+      }
     }));
   }
 
   onunload(): void {
+    if (this.saveCoordinator.isDirty) {
+      void this.saveCoordinator.flush().catch((error: unknown) => {
+        new Notice(error instanceof Error
+          ? `Current Note AI still has unsaved local data: ${error.message}`
+          : "Current Note AI still has unsaved local data.");
+      });
+    }
     this.app.workspace.detachLeavesOfType(CURRENT_NOTE_AI_VIEW);
   }
 
   async loadSettings(): Promise<void> {
-    const saved = await this.loadData() as Partial<CurrentNoteAiSettings> | null;
-    const savedModels = Array.isArray(saved?.availableModels)
-      ? saved.availableModels.filter((model): model is string => (
-        typeof model === "string" && model.trim().length > 0
-      ))
-      : [];
-    this.settings = {
-      ...DEFAULT_SETTINGS,
-      ...(saved ?? {}),
-      availableModels: [...new Set([
-        ...DEFAULT_SETTINGS.availableModels,
-        ...savedModels.map((model) => model.trim()),
-      ])],
-      conversationHistory: sanitizeConversationHistory(saved?.conversationHistory),
-    };
+    this.settings = sanitizeSettings(await this.loadData(), DEFAULT_SETTINGS);
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    this.saveCoordinator.markDirty();
+    await this.saveCoordinator.flush();
+  }
+
+  get hasPendingSave(): boolean {
+    return this.saveCoordinator.isDirty;
+  }
+
+  async retryPendingSave(): Promise<void> {
+    await this.saveCoordinator.flush();
   }
 
   getApiKey(): string {
@@ -113,7 +144,8 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     const models = await this.provider.listModels(this.getApiKey());
     const modelIds = [...new Set(models
       .map((model) => model.id.trim())
-      .filter((model) => model.length > 0))];
+      .filter((model) => model.length > 0 && model.length <= 200))]
+      .slice(0, 100);
     if (modelIds.length === 0) throw new Error("DeepSeek returned no available models.");
 
     this.settings.availableModels = modelIds;
@@ -138,6 +170,21 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     await this.saveSettings();
   }
 
+  async deleteConversation(id: string): Promise<void> {
+    const next = this.settings.conversationHistory.filter((conversation) => conversation.id !== id);
+    if (next.length === this.settings.conversationHistory.length) return;
+    this.settings.conversationHistory = next;
+    await this.saveSettings();
+    this.notifyOpenViews();
+  }
+
+  async clearConversationHistory(): Promise<void> {
+    if (this.settings.conversationHistory.length === 0) return;
+    this.settings.conversationHistory = [];
+    await this.saveSettings();
+    this.notifyOpenViews();
+  }
+
   private async activateView(): Promise<void> {
     const leaf = await this.app.workspace.ensureSideLeaf(CURRENT_NOTE_AI_VIEW, "right", {
       active: true,
@@ -152,5 +199,30 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
         leaf.view.handleWorkspaceContextChanged();
       }
     }
+  }
+
+  private notifyEditorChanged(editorView: MarkdownView): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(CURRENT_NOTE_AI_VIEW)) {
+      if (leaf.view instanceof CurrentNoteAiView) {
+        leaf.view.handleEditorContentChanged(editorView);
+      }
+    }
+  }
+
+  private async handleFileRename(file: TFile, oldPath: string): Promise<void> {
+    const renamed = renameConversationHistoryNote(
+      this.settings.conversationHistory,
+      oldPath,
+      file.path,
+      file.basename,
+    );
+    this.settings.conversationHistory = renamed.history;
+
+    for (const leaf of this.app.workspace.getLeavesOfType(CURRENT_NOTE_AI_VIEW)) {
+      if (leaf.view instanceof CurrentNoteAiView) {
+        leaf.view.handleNoteRenamed(file, oldPath);
+      }
+    }
+    if (renamed.changed) await this.saveSettings();
   }
 }

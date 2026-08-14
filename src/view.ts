@@ -1,4 +1,4 @@
-import { ItemView, MarkdownView, Notice, WorkspaceLeaf } from "obsidian";
+import { ItemView, MarkdownView, Notice, TFile, WorkspaceLeaf } from "obsidian";
 import { compileSelectedOperations, EditProposalError, validateEditProposal } from "./core/edit-proposal";
 import { createConversationTitle } from "./core/conversation-history";
 import {
@@ -8,6 +8,7 @@ import {
 } from "./core/completion";
 import { shouldSubmitComposer } from "./core/composer-shortcut";
 import { renderAssistantMarkdown } from "./core/markdown-rendering";
+import { evaluateRequestBudget } from "./core/request-budget";
 import {
   buildDiscussionContinuationMessages,
   buildDiscussionMessages,
@@ -22,6 +23,7 @@ import type {
   ConversationMessage,
   DocumentSnapshot,
   EditProposalCandidate,
+  ProviderMessage,
   SavedConversation,
 } from "./types";
 
@@ -69,6 +71,15 @@ export class CurrentNoteAiView extends ItemView {
   private activeConversationNoteName = "";
   private requestGeneration = 0;
   private messageSequence = 0;
+  private timelineEl: HTMLElement | null = null;
+  private proposalStatusEl: HTMLElement | null = null;
+  private proposalApplyButton: HTMLButtonElement | null = null;
+  private revertButton: HTMLButtonElement | null = null;
+  private renderedMessageCount = 0;
+  private readonly assistantHtmlCache = new Map<string, { source: string; html: string }>();
+  private pendingScrollTimer: { window: Window; id: number } | null = null;
+  private observedCurrentLeaf: WorkspaceLeaf | null = null;
+  private observedCurrentFile: TFile | null = null;
 
   constructor(leaf: WorkspaceLeaf, private readonly plugin: CurrentNoteAiPlugin) {
     super(leaf);
@@ -99,7 +110,9 @@ export class CurrentNoteAiView extends ItemView {
 
   async onClose(): Promise<void> {
     this.requestGeneration += 1;
+    this.clearPendingScrollTimer();
     this.messages = [];
+    this.assistantHtmlCache.clear();
     this.pendingProposal = null;
     this.editRetry = null;
     this.lastApplied = null;
@@ -108,13 +121,47 @@ export class CurrentNoteAiView extends ItemView {
 
   handleWorkspaceContextChanged(): void {
     if (!this.contentEl.isConnected) return;
+    const current = this.plugin.documentGate.getCurrent();
+    if (
+      (current?.leaf ?? null) === this.observedCurrentLeaf
+      && (current?.file ?? null) === this.observedCurrentFile
+    ) return;
     this.render();
+  }
+
+  handleEditorContentChanged(editorView: MarkdownView): void {
+    if (!this.contentEl.isConnected || this.bound?.leaf.view !== editorView) return;
+    this.refreshLiveEditState();
+  }
+
+  handleNoteRenamed(file: TFile, oldPath: string): void {
+    let changed = false;
+    if (this.bound?.file === file && this.bound.filePath === oldPath) {
+      this.bound = { ...this.bound, filePath: file.path };
+      changed = true;
+    }
+    if (this.activeConversationNotePath === oldPath) {
+      this.activeConversationNotePath = file.path;
+      this.activeConversationNoteName = file.basename;
+      changed = true;
+    }
+    if (changed && this.contentEl.isConnected) this.render();
   }
 
   private render(): void {
     const { contentEl } = this;
+    const previousTimeline = this.timelineEl;
+    const previousScrollTop = previousTimeline?.scrollTop ?? 0;
+    const wasNearBottom = previousTimeline
+      ? previousTimeline.scrollHeight - previousTimeline.scrollTop - previousTimeline.clientHeight < 48
+      : true;
+    const appendedMessages = this.messages.length > this.renderedMessageCount;
+    this.clearPendingScrollTimer();
     contentEl.empty();
     contentEl.addClass("current-note-ai-view");
+    this.proposalStatusEl = null;
+    this.proposalApplyButton = null;
+    this.revertButton = null;
 
     this.renderHeader(contentEl);
     if (this.historyOpen) this.renderHistoryPanel(contentEl);
@@ -131,10 +178,12 @@ export class CurrentNoteAiView extends ItemView {
       contentEl.createDiv({
         cls: "current-note-ai-error",
         text: this.errorMessage,
+        attr: { role: "alert", "aria-live": "assertive" },
       });
     }
 
     const timeline = contentEl.createDiv({ cls: "current-note-ai-timeline" });
+    this.timelineEl = timeline;
     if (this.messages.length === 0 && !this.pendingProposal && !this.editRetry) {
       const empty = timeline.createDiv({ cls: "current-note-ai-empty" });
       empty.createDiv({ cls: "current-note-ai-empty-icon", text: "✦" });
@@ -150,9 +199,24 @@ export class CurrentNoteAiView extends ItemView {
     if (this.pendingProposal) this.renderProposal(timeline, this.pendingProposal);
 
     this.renderComposer(contentEl);
-    window.setTimeout(() => {
-      timeline.scrollTop = timeline.scrollHeight;
+    this.renderedMessageCount = this.messages.length;
+    const targetWindow = contentEl.win;
+    const timerId = targetWindow.setTimeout(() => {
+      if (!timeline.isConnected) return;
+      if (appendedMessages || wasNearBottom) {
+        timeline.scrollTop = timeline.scrollHeight;
+      } else {
+        timeline.scrollTop = Math.min(previousScrollTop, timeline.scrollHeight);
+      }
+      this.pendingScrollTimer = null;
     });
+    this.pendingScrollTimer = { window: targetWindow, id: timerId };
+  }
+
+  private clearPendingScrollTimer(): void {
+    if (!this.pendingScrollTimer) return;
+    this.pendingScrollTimer.window.clearTimeout(this.pendingScrollTimer.id);
+    this.pendingScrollTimer = null;
   }
 
   private renderHeader(container: HTMLElement): void {
@@ -160,6 +224,11 @@ export class CurrentNoteAiView extends ItemView {
     const title = header.createDiv({ cls: "current-note-ai-brand" });
     const titleRow = title.createDiv({ cls: "current-note-ai-title-row" });
     titleRow.createEl("strong", { text: "Current Note AI" });
+    titleRow.createSpan({
+      cls: "current-note-ai-version",
+      text: `v${this.plugin.manifest.version}`,
+      attr: { title: "Loaded plugin version" },
+    });
     const historyButton = titleRow.createEl("button", {
       cls: this.historyOpen
         ? "current-note-ai-history-button is-open"
@@ -223,7 +292,17 @@ export class CurrentNoteAiView extends ItemView {
     }
     if (this.lastApplied) {
       const revert = actions.createEl("button", { text: "Revert AI edit" });
+      this.revertButton = revert;
+      revert.disabled = !this.canRevertAppliedChange();
       revert.addEventListener("click", () => void this.revertLastApplied());
+    }
+    if (this.plugin.hasPendingSave) {
+      const retrySave = actions.createEl("button", {
+        text: "Retry save",
+        attr: { title: "Retry saving Current Note AI settings and conversation history" },
+      });
+      retrySave.disabled = this.busy;
+      retrySave.addEventListener("click", () => void this.retryPendingSave());
     }
     const clear = actions.createEl("button", {
       text: "Clear",
@@ -244,9 +323,15 @@ export class CurrentNoteAiView extends ItemView {
       return;
     }
 
+    const historyActions = panel.createDiv({ cls: "current-note-ai-history-actions" });
+    const clearAll = historyActions.createEl("button", { text: "Delete all history" });
+    clearAll.disabled = this.busy;
+    clearAll.addEventListener("click", () => void this.deleteAllHistory());
+
     const list = panel.createDiv({ cls: "current-note-ai-history-list" });
     for (const conversation of history) {
-      const item = list.createEl("button", {
+      const itemRow = list.createDiv({ cls: "current-note-ai-history-row" });
+      const item = itemRow.createEl("button", {
         cls: conversation.id === this.activeConversationId
           ? "current-note-ai-history-item is-active"
           : "current-note-ai-history-item",
@@ -263,6 +348,16 @@ export class CurrentNoteAiView extends ItemView {
         text: `${conversation.noteName || "Unknown note"} · ${this.formatHistoryTime(conversation.updatedAt)}`,
       });
       item.addEventListener("click", () => this.loadConversation(conversation));
+      const remove = itemRow.createEl("button", {
+        cls: "current-note-ai-history-delete",
+        text: "×",
+        attr: {
+          "aria-label": `Delete conversation ${conversation.title}`,
+          title: "Delete this saved conversation",
+        },
+      });
+      remove.disabled = this.busy;
+      remove.addEventListener("click", () => void this.deleteHistoryConversation(conversation));
     }
   }
 
@@ -270,6 +365,7 @@ export class CurrentNoteAiView extends ItemView {
     this.requestGeneration += 1;
     this.busy = false;
     this.messages = conversation.messages.map((message) => ({ ...message }));
+    this.assistantHtmlCache.clear();
     this.pendingProposal = null;
     this.editRetry = null;
     this.lastApplied = null;
@@ -322,6 +418,8 @@ export class CurrentNoteAiView extends ItemView {
   private renderContextBar(container: HTMLElement): void {
     const row = container.createDiv({ cls: "current-note-ai-context" });
     const current = this.plugin.documentGate.getCurrent();
+    this.observedCurrentLeaf = current?.leaf ?? null;
+    this.observedCurrentFile = current?.file ?? null;
 
     if (!this.bound) {
       row.createDiv({ text: "No Markdown note is bound." });
@@ -347,7 +445,7 @@ export class CurrentNoteAiView extends ItemView {
         text: current ? "Use current note" : "Open a Markdown note",
         cls: "mod-cta",
       });
-      button.disabled = !current || this.busy;
+      button.disabled = !current || this.busy || this.modelLoading;
       button.addEventListener("click", () => this.bindToCurrent());
     } else {
       row.createDiv({ cls: "current-note-ai-context-ready", text: "Bound" });
@@ -362,7 +460,14 @@ export class CurrentNoteAiView extends ItemView {
     const bubble = group.createDiv({ cls: "current-note-ai-bubble" });
     if (message.role === "assistant") {
       bubble.addClass("current-note-ai-markdown", "markdown-rendered");
-      bubble.innerHTML = renderAssistantMarkdown(message.content);
+      const cached = this.assistantHtmlCache.get(message.id);
+      const html = cached?.source === message.content
+        ? cached.html
+        : renderAssistantMarkdown(message.content);
+      if (!cached || cached.source !== message.content) {
+        this.assistantHtmlCache.set(message.id, { source: message.content, html });
+      }
+      bubble.innerHTML = html;
       this.renderMessageMetadata(group, message);
     } else {
       bubble.setText(message.content);
@@ -396,6 +501,7 @@ export class CurrentNoteAiView extends ItemView {
 
   private canContinueMessage(message: ConversationMessage): boolean {
     return !this.busy
+      && !this.modelLoading
       && !this.hasHistoryBindingMismatch()
       && this.messages.at(-1)?.id === message.id
       && message.requestKind === "discussion"
@@ -406,7 +512,10 @@ export class CurrentNoteAiView extends ItemView {
 
   private renderTypingBubble(container: HTMLElement): void {
     const row = container.createDiv({ cls: "current-note-ai-message-row is-assistant" });
-    const bubble = row.createDiv({ cls: "current-note-ai-bubble is-typing" });
+    const bubble = row.createDiv({
+      cls: "current-note-ai-bubble is-typing",
+      attr: { role: "status", "aria-label": "DeepSeek is responding" },
+    });
     bubble.createSpan();
     bubble.createSpan();
     bubble.createSpan();
@@ -455,7 +564,7 @@ export class CurrentNoteAiView extends ItemView {
       cls: "current-note-ai-proposal-stats",
       text: `${proposal.candidate.operations.length} operations · ${Math.round(proposal.candidate.changeRatio * 100)}% change budget`,
     });
-    heading.createDiv({
+    this.proposalStatusEl = heading.createDiv({
       cls: stale ? "current-note-ai-status is-stale" : "current-note-ai-status",
       text: stale ? "Stale" : "Ready",
     });
@@ -477,7 +586,10 @@ export class CurrentNoteAiView extends ItemView {
       const item = card.createEl("details", { cls: "current-note-ai-operation" });
       item.open = true;
       const summary = item.createEl("summary");
-      const checkbox = summary.createEl("input", { type: "checkbox" });
+      const checkbox = summary.createEl("input", {
+        type: "checkbox",
+        attr: { "aria-label": `Select edit: ${operation.reason}` },
+      });
       checkbox.checked = proposal.selectedIds.has(operation.id);
       checkbox.addEventListener("click", (event) => event.stopPropagation());
       checkbox.addEventListener("change", () => {
@@ -510,6 +622,7 @@ export class CurrentNoteAiView extends ItemView {
       this.render();
     });
     const apply = actions.createEl("button", { text: "Apply selected", cls: "mod-cta" });
+    this.proposalApplyButton = apply;
     apply.disabled = stale || proposal.selectedIds.size === 0 || this.busy;
     apply.addEventListener("click", () => void this.applyProposal(proposal));
   }
@@ -526,7 +639,7 @@ export class CurrentNoteAiView extends ItemView {
       },
     });
     textarea.value = this.draft;
-    textarea.disabled = this.busy || historyMismatch;
+    textarea.disabled = this.busy || this.modelLoading || historyMismatch;
     textarea.addEventListener("input", () => {
       this.draft = textarea.value;
     });
@@ -545,10 +658,10 @@ export class CurrentNoteAiView extends ItemView {
     });
     const buttons = actions.createDiv({ cls: "current-note-ai-composer-buttons" });
     const propose = buttons.createEl("button", { text: "Propose changes" });
-    propose.disabled = this.busy || historyMismatch;
+    propose.disabled = this.busy || this.modelLoading || historyMismatch;
     propose.addEventListener("click", () => void this.requestEditProposal());
     const send = buttons.createEl("button", { text: "Send", cls: "mod-cta" });
-    send.disabled = this.busy || historyMismatch;
+    send.disabled = this.busy || this.modelLoading || historyMismatch;
     send.addEventListener("click", () => void this.sendDiscussion());
   }
 
@@ -572,6 +685,7 @@ export class CurrentNoteAiView extends ItemView {
     this.requestGeneration += 1;
     this.busy = false;
     this.messages = [];
+    this.assistantHtmlCache.clear();
     this.pendingProposal = null;
     this.editRetry = null;
     this.lastApplied = null;
@@ -611,6 +725,14 @@ export class CurrentNoteAiView extends ItemView {
     return snapshot;
   }
 
+  private assertRequestBudget(messages: readonly ProviderMessage[], maxOutputTokens: number): void {
+    const budget = evaluateRequestBudget(messages, maxOutputTokens);
+    if (budget.fits) return;
+    throw new CurrentDocumentError(
+      `This request needs an estimated ${budget.requiredTokens.toLocaleString()} tokens including safety margin, above the conservative ${budget.contextWindowTokens.toLocaleString()}-token context limit. Reduce the current note or output budget before retrying. Nothing was sent.`,
+    );
+  }
+
   private hasHistoryBindingMismatch(): boolean {
     return this.activeConversationId !== null
       && this.activeConversationNotePath.length > 0
@@ -619,6 +741,7 @@ export class CurrentNoteAiView extends ItemView {
 
   private resetConversationState(): void {
     this.messages = [];
+    this.assistantHtmlCache.clear();
     this.pendingProposal = null;
     this.editRetry = null;
     this.lastApplied = null;
@@ -632,6 +755,72 @@ export class CurrentNoteAiView extends ItemView {
     this.activeConversationCreatedAt = 0;
     this.activeConversationNotePath = "";
     this.activeConversationNoteName = "";
+  }
+
+  private refreshLiveEditState(): void {
+    if (this.pendingProposal && this.proposalStatusEl && this.proposalApplyButton) {
+      const stale = this.isProposalStale(this.pendingProposal);
+      this.proposalStatusEl.setText(stale ? "Stale" : "Ready");
+      this.proposalStatusEl.classList.toggle("is-stale", stale);
+      this.proposalApplyButton.disabled = stale
+        || this.pendingProposal.selectedIds.size === 0
+        || this.busy;
+    }
+    if (this.revertButton) {
+      this.revertButton.disabled = !this.canRevertAppliedChange();
+    }
+  }
+
+  private canRevertAppliedChange(): boolean {
+    if (!this.lastApplied) return false;
+    try {
+      const view = this.plugin.documentGate.assertCurrent(this.lastApplied.binding);
+      return view.editor.getValue() === this.lastApplied.afterText;
+    } catch {
+      return false;
+    }
+  }
+
+  private async retryPendingSave(): Promise<void> {
+    try {
+      await this.plugin.retryPendingSave();
+      this.errorMessage = "";
+      new Notice("Current Note AI data saved.");
+    } catch (error) {
+      this.errorMessage = `Current Note AI data is still not saved: ${this.describeError(error)}`;
+    }
+    this.render();
+  }
+
+  private async deleteHistoryConversation(conversation: SavedConversation): Promise<void> {
+    const confirmed = this.contentEl.win.confirm(
+      `Delete the saved conversation “${conversation.title}”? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    try {
+      await this.plugin.deleteConversation(conversation.id);
+      if (this.activeConversationId === conversation.id) this.clearConversation();
+      else this.render();
+      new Notice("Saved conversation deleted.");
+    } catch (error) {
+      this.errorMessage = this.describeError(error);
+      this.render();
+    }
+  }
+
+  private async deleteAllHistory(): Promise<void> {
+    const confirmed = this.contentEl.win.confirm(
+      "Delete all saved Current Note AI conversations? This cannot be undone.",
+    );
+    if (!confirmed) return;
+    try {
+      await this.plugin.clearConversationHistory();
+      this.clearConversation();
+      new Notice("All Current Note AI conversation history was deleted.");
+    } catch (error) {
+      this.errorMessage = this.describeError(error);
+      this.render();
+    }
   }
 
   private async persistConversation(snapshot?: DocumentSnapshot): Promise<void> {
@@ -663,7 +852,7 @@ export class CurrentNoteAiView extends ItemView {
 
   private async sendDiscussion(): Promise<void> {
     const request = this.draft.trim();
-    if (!request || this.busy) return;
+    if (!request || this.busy || this.modelLoading) return;
     let generation: number | null = null;
 
     try {
@@ -678,13 +867,15 @@ export class CurrentNoteAiView extends ItemView {
       await this.persistConversation(snapshot);
       this.render();
 
+      const providerMessages = buildDiscussionMessages(
+        snapshot.text,
+        history,
+        request,
+        this.plugin.settings.maxTokens,
+      );
+      this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens);
       const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
-        messages: buildDiscussionMessages(
-          snapshot.text,
-          history,
-          request,
-          this.plugin.settings.maxTokens,
-        ),
+        messages: providerMessages,
         options: {
           model: this.plugin.settings.model,
           maxTokens: this.plugin.settings.maxTokens,
@@ -735,12 +926,14 @@ export class CurrentNoteAiView extends ItemView {
       generation = ++this.requestGeneration;
       this.render();
 
+      const providerMessages = buildDiscussionContinuationMessages(
+        snapshot.text,
+        history,
+        this.plugin.settings.maxTokens,
+      );
+      this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens);
       const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
-        messages: buildDiscussionContinuationMessages(
-          snapshot.text,
-          history,
-          this.plugin.settings.maxTokens,
-        ),
+        messages: providerMessages,
         options: {
           model: this.plugin.settings.model,
           maxTokens: this.plugin.settings.maxTokens,
@@ -785,7 +978,7 @@ export class CurrentNoteAiView extends ItemView {
 
   private async requestEditProposal(): Promise<void> {
     const request = this.draft.trim();
-    if (!request || this.busy) return;
+    if (!request || this.busy || this.modelLoading) return;
     let generation: number | null = null;
 
     try {
@@ -802,13 +995,15 @@ export class CurrentNoteAiView extends ItemView {
       await this.persistConversation(snapshot);
       this.render();
 
+      const providerMessages = buildEditMessages(
+        snapshot.text,
+        history,
+        request,
+        this.plugin.settings.maxTokens,
+      );
+      this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens);
       const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
-        messages: buildEditMessages(
-          snapshot.text,
-          history,
-          request,
-          this.plugin.settings.maxTokens,
-        ),
+        messages: providerMessages,
         options: {
           model: this.plugin.settings.model,
           maxTokens: this.plugin.settings.maxTokens,
@@ -896,7 +1091,7 @@ export class CurrentNoteAiView extends ItemView {
   }
 
   private async retryEditProposal(retry: EditRetryState): Promise<void> {
-    if (this.busy || retry.retryAttempted || retry.nextMaxTokens === null) return;
+    if (this.busy || this.modelLoading || retry.retryAttempted || retry.nextMaxTokens === null) return;
     let generation: number | null = null;
     const retryBudget = retry.nextMaxTokens;
 
@@ -916,13 +1111,15 @@ export class CurrentNoteAiView extends ItemView {
       generation = ++this.requestGeneration;
       this.render();
 
+      const providerMessages = buildEditMessages(
+        retry.snapshot.text,
+        retry.history,
+        retry.request,
+        retryBudget,
+      );
+      this.assertRequestBudget(providerMessages, retryBudget);
       const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
-        messages: buildEditMessages(
-          retry.snapshot.text,
-          retry.history,
-          retry.request,
-          retryBudget,
-        ),
+        messages: providerMessages,
         options: {
           model: this.plugin.settings.model,
           maxTokens: retryBudget,
@@ -1029,10 +1226,18 @@ export class CurrentNoteAiView extends ItemView {
         "assistant",
         `Applied ${operations.length} reviewed edit${operations.length === 1 ? "" : "s"}.`,
       ));
-      await this.persistConversation();
       new Notice("Current Note AI applied the selected edits.");
+      this.render();
     } catch (error) {
       this.errorMessage = this.describeError(error);
+      this.render();
+      return;
+    }
+
+    try {
+      await this.persistConversation();
+    } catch (error) {
+      this.errorMessage = `The note was modified successfully, but Current Note AI history was not saved: ${this.describeError(error)} Use Retry save; Revert AI edit remains available.`;
     }
     this.render();
   }
@@ -1057,11 +1262,19 @@ export class CurrentNoteAiView extends ItemView {
       }
       this.lastApplied = null;
       this.messages.push(this.newMessage("assistant", "Reverted the last AI edit."));
-      await this.persistConversation();
       this.errorMessage = "";
       new Notice("Current Note AI reverted the last AI edit.");
+      this.render();
     } catch (error) {
       this.errorMessage = this.describeError(error);
+      this.render();
+      return;
+    }
+
+    try {
+      await this.persistConversation();
+    } catch (error) {
+      this.errorMessage = `The note was reverted successfully, but Current Note AI history was not saved: ${this.describeError(error)} Use Retry save.`;
     }
     this.render();
   }

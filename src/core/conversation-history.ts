@@ -1,6 +1,8 @@
 import type { ConversationMessage, SavedConversation } from "../types";
 
 export const MAX_SAVED_CONVERSATIONS = 50;
+export const MAX_SAVED_CONVERSATION_BYTES = 5 * 1024 * 1024;
+export const MAX_SAVED_HISTORY_BYTES = 20 * 1024 * 1024;
 const MAX_SAVED_MESSAGES = 200;
 const MAX_TITLE_CHARACTERS = 36;
 const LEGACY_OUTPUT_LIMIT_SUFFIX = "\n\n[Response stopped because the output limit was reached.]";
@@ -30,9 +32,18 @@ export function sanitizeConversationHistory(value: unknown): SavedConversation[]
     conversations.push(conversation);
   }
 
-  return conversations
+  const sorted = conversations
     .sort((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, MAX_SAVED_CONVERSATIONS);
+  const bounded: SavedConversation[] = [];
+  let totalBytes = 0;
+  for (const conversation of sorted) {
+    const bytes = serializedBytes(conversation);
+    if (totalBytes + bytes > MAX_SAVED_HISTORY_BYTES) break;
+    bounded.push(conversation);
+    totalBytes += bytes;
+  }
+  return bounded;
 }
 
 export function upsertConversationHistory(
@@ -43,6 +54,25 @@ export function upsertConversationHistory(
     conversation,
     ...history.filter((item) => item.id !== conversation.id),
   ]);
+}
+
+export function renameConversationHistoryNote(
+  history: readonly SavedConversation[],
+  oldPath: string,
+  newPath: string,
+  newName: string,
+): { history: SavedConversation[]; changed: boolean } {
+  let changed = false;
+  const renamed = history.map((conversation) => {
+    if (conversation.notePath !== oldPath) return conversation;
+    changed = true;
+    return {
+      ...conversation,
+      notePath: newPath,
+      noteName: newName,
+    };
+  });
+  return { history: renamed, changed };
 }
 
 function sanitizeConversation(value: unknown): SavedConversation | null {
@@ -56,10 +86,19 @@ function sanitizeConversation(value: unknown): SavedConversation | null {
   if (!id || !title || createdAt === null || updatedAt === null) return null;
   if (!Array.isArray(value.messages)) return null;
 
-  const messages = value.messages
+  const sanitizedMessages = value.messages
     .map(sanitizeMessage)
     .filter((message): message is ConversationMessage => message !== null)
     .slice(-MAX_SAVED_MESSAGES);
+  const messages: ConversationMessage[] = [];
+  let messageBytes = 0;
+  for (const message of sanitizedMessages.slice().reverse()) {
+    const bytes = serializedBytes(message);
+    if (messageBytes + bytes > MAX_SAVED_CONVERSATION_BYTES) break;
+    messages.push(message);
+    messageBytes += bytes;
+  }
+  messages.reverse();
   if (messages.length === 0) return null;
 
   return {
@@ -154,4 +193,8 @@ function readNonNegativeInteger(value: unknown, max: number): number | undefined
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max
     ? value
     : undefined;
+}
+
+function serializedBytes(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
 }

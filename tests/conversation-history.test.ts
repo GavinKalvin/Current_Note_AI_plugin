@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   createConversationTitle,
+  MAX_SAVED_CONVERSATION_BYTES,
   MAX_SAVED_CONVERSATIONS,
+  renameConversationHistoryNote,
   sanitizeConversationHistory,
   upsertConversationHistory,
 } from "../src/core/conversation-history";
@@ -62,6 +64,18 @@ describe("conversation history persistence", () => {
     expect(result).toHaveLength(2);
   });
 
+  it("updates only conversations bound to a renamed note", () => {
+    const original = [conversation("target", 20), conversation("other", 10)];
+    original[0]!.notePath = "old.md";
+    original[1]!.notePath = "other.md";
+
+    const result = renameConversationHistoryNote(original, "old.md", "folder/new.md", "new");
+
+    expect(result.changed).toBe(true);
+    expect(result.history[0]).toMatchObject({ notePath: "folder/new.md", noteName: "new" });
+    expect(result.history[1]).toBe(original[1]);
+  });
+
   it("preserves safe generation metadata and migrates legacy limit warnings", () => {
     const input = conversation("legacy", 10);
     input.messages = [{
@@ -85,5 +99,21 @@ describe("conversation history persistence", () => {
     expect(message?.generationState).toBe("incomplete");
     expect(message?.requestKind).toBe("discussion");
     expect(message?.usage?.reasoningTokens).toBe(1_024);
+  });
+
+  it("bounds the serialized size of one saved conversation", () => {
+    const oversized = conversation("large", 10);
+    oversized.messages = Array.from({ length: 12 }, (_, index) => ({
+      id: `large-${index}`,
+      role: "assistant" as const,
+      content: "x".repeat(500_000),
+      createdAt: index + 1,
+    }));
+
+    const [sanitized] = sanitizeConversationHistory([oversized]);
+    expect(sanitized).toBeDefined();
+    expect(new TextEncoder().encode(JSON.stringify(sanitized)).byteLength)
+      .toBeLessThanOrEqual(MAX_SAVED_CONVERSATION_BYTES);
+    expect(sanitized?.messages.length).toBeLessThan(oversized.messages.length);
   });
 });

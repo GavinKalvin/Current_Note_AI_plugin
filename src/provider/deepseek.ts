@@ -8,6 +8,7 @@ import type {
 import { parseCompletionUsage } from "../core/completion";
 
 const DEFAULT_BASE_URL = "https://api.deepseek.com";
+const DEFAULT_TIMEOUT_MS = 120_000;
 
 export class ProviderRequestError extends Error {
   constructor(
@@ -49,25 +50,64 @@ function providerErrorMessage(envelope: Record<string, unknown>, status: number)
     : `DeepSeek request failed with HTTP ${status}.`;
 }
 
+function headerValue(headers: Record<string, string>, name: string): string | undefined {
+  const key = Object.keys(headers).find((candidate) => candidate.toLowerCase() === name);
+  return key ? headers[key] : undefined;
+}
+
 export class DeepSeekAdapter implements ProviderAdapter {
-  constructor(private readonly baseUrl = DEFAULT_BASE_URL) {}
+  private readonly timeoutMs: number;
+
+  constructor(
+    private readonly baseUrl = DEFAULT_BASE_URL,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+  ) {
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+      throw new Error("DeepSeek timeoutMs must be a finite positive number.");
+    }
+    this.timeoutMs = timeoutMs;
+  }
+
+  private async request(options: Parameters<typeof requestUrl>[0]): Promise<Awaited<ReturnType<typeof requestUrl>>> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new ProviderRequestError(
+          "timeout",
+          "DeepSeek request timed out locally and may still be processed remotely.",
+        ));
+      }, this.timeoutMs);
+    });
+
+    try {
+      return await Promise.race([requestUrl(options), timeout]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
 
   async listModels(apiKey: string): Promise<ProviderModel[]> {
-    const response = await requestUrl({
+    const response = await this.request({
       url: `${this.baseUrl}/models`,
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey}` },
       throw: false,
     });
-    const envelope = parseEnvelope(response.text);
     if (response.status < 200 || response.status >= 300) {
+      let envelope: Record<string, unknown> = {};
+      try {
+        envelope = parseEnvelope(response.text);
+      } catch {
+        // Preserve the HTTP-specific error when an error response is not JSON.
+      }
       throw new ProviderRequestError(
         `http-${response.status}`,
         providerErrorMessage(envelope, response.status),
         response.status,
-        response.headers["retry-after"],
+        headerValue(response.headers, "retry-after"),
       );
     }
+    const envelope = parseEnvelope(response.text);
 
     if (!Array.isArray(envelope.data)) {
       throw new ProviderRequestError("invalid-response", "DeepSeek did not return a model list.");
@@ -96,7 +136,7 @@ export class DeepSeekAdapter implements ProviderAdapter {
       body.response_format = { type: "json_object" };
     }
 
-    const response = await requestUrl({
+    const response = await this.request({
       url: `${this.baseUrl}/chat/completions`,
       method: "POST",
       contentType: "application/json",
@@ -104,15 +144,21 @@ export class DeepSeekAdapter implements ProviderAdapter {
       body: JSON.stringify(body),
       throw: false,
     });
-    const envelope = parseEnvelope(response.text);
     if (response.status < 200 || response.status >= 300) {
+      let envelope: Record<string, unknown> = {};
+      try {
+        envelope = parseEnvelope(response.text);
+      } catch {
+        // Preserve the HTTP-specific error when an error response is not JSON.
+      }
       throw new ProviderRequestError(
         `http-${response.status}`,
         providerErrorMessage(envelope, response.status),
         response.status,
-        response.headers["retry-after"],
+        headerValue(response.headers, "retry-after"),
       );
     }
+    const envelope = parseEnvelope(response.text);
 
     const firstChoice = Array.isArray(envelope.choices)
       ? asRecord(envelope.choices[0])

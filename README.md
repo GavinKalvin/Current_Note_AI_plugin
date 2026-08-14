@@ -24,13 +24,14 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 分析、讨�
 - 不完整编辑可由用户发起一次更高 token 预算的完整重试；半截 JSON 永远不会续接或局部应用。
 - 逐项查看和勾选修改；Apply 前再次核对 leaf、文件身份、路径和全文快照。
 - 只在文档仍等于 AI 修改后的版本时允许 **Revert AI edit**。
-- 最近 50 个会话保存在插件本地数据中；编辑提案和回滚副本仍只保存在内存中。
+- 最近 50 个会话保存在插件本地数据中；单会话最多 5 MiB、全部历史最多 20 MiB，编辑提案和回滚副本仍只保存在内存中。
+- Apply/Revert 成功与历史保存失败会分别提示；保存使用 revision 串行化，并在待保存时提供显式 **Retry save**。编辑器变化只刷新 stale/revert 状态，不会全量重绘聊天内容；Markdown HTML 解析结果按消息缓存，滚动位置得以保持。
 
 ## 安装
 
 ### 从 Release 安装（推荐）
 
-1. 从 GitHub Releases 下载 `current-note-ai-0.1.5.zip`。
+1. 从与 `manifest.json` 版本号一致的 GitHub Release 下载 `current-note-ai-x.y.z.zip`。
 2. 解压到 Vault 的 `.obsidian/plugins/current-note-ai/`。
 3. 确认目录中包含 `main.js`、`manifest.json`、`styles.css`。
 4. 在 **Settings → Third-party plugins** 中启用 **Current Note AI**。
@@ -64,6 +65,8 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 分析、讨�
 - 当前内存会话中最近的用户和助手消息。
 
 默认不会发送 Vault 名、文件路径、其他文件内容或遥测。DeepSeek 已经收到请求后，本地 Cancel 只能忽略迟到响应，不能撤销远端处理。
+
+请求体有保守的 64,000 token 启发式预算；超过预算会在联网前阻断，不会静默截断。`requestUrl` 还有 120 秒本地超时：超时只停止本地等待或忽略迟到结果，远端请求可能仍在处理或计费。
 
 历史会话与创建它的笔记路径绑定。若加载历史时当前绑定的是另一篇笔记，插件只允许查看旧消息，并锁定发送按钮；回到原笔记并重新绑定后才能继续。打开历史列表或加载历史本身不会产生网络请求。
 
@@ -127,6 +130,8 @@ DeepSeek 完整编辑只能返回以下形状的 JSON：
 - 不支持 PDF、Canvas、EPUB、多文件编辑、全库检索、历史导出或跨设备会话合并。
 - 单次笔记正文上限为 1,500,000 字符；超限时拒绝发送，不会静默截断。
 - 最多保留最近 50 个会话，每个会话最多持久化最近 200 条用户/助手消息。
+- 单会话历史最多 5 MiB、全部历史最多 20 MiB；支持删除单条会话或全部历史，笔记重命名会更新绑定与历史路径。
+- 请求体使用保守的 64,000 token 启发式预算，超限在联网前拒绝；120 秒 timeout 是本地等待边界，不代表远端取消。
 - 精确锚点若在正文中重复，会拒绝该提案并要求重新生成更长的上下文锚点。
 
 ## 开发
@@ -137,7 +142,7 @@ pnpm check
 pnpm build
 ```
 
-`pnpm check` 会运行 TypeScript 类型检查和纯函数测试。涉及多窗格、重命名、同步并发、Editor Undo 或 DeepSeek 长连接的改动，还应在真实 Obsidian 中进行集成验证。
+`pnpm check` 会运行 TypeScript 类型检查和纯函数测试；CI 还会构建 Release 三件套及 zip。涉及多窗格、重命名、同步并发、Editor Undo 或 DeepSeek 长连接的改动，仍应在真实 Obsidian 中进行集成验证；仓库测试不等同于真实 Obsidian 验证。
 
 ## 开源与安全
 

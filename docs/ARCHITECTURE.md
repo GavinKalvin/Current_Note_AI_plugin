@@ -9,7 +9,7 @@ Current Note AI lets a user discuss or revise exactly one explicitly bound Markd
 1. `CurrentDocumentGate` binds a concrete Obsidian `WorkspaceLeaf`, `TFile`, and path.
 2. Immediately before a request, the gate verifies that the same leaf still exposes the same file and captures the complete unsaved editor text.
 3. The prompt builder combines that snapshot, the in-memory conversation, the user's request, and a budget-aware completion contract.
-4. `DeepSeekAdapter` sends a non-streaming HTTPS request through Obsidian `requestUrl`, explicitly disables thinking, and parses numeric token usage including reasoning tokens when supplied.
+4. The view request coordinator estimates a conservative 64,000-token request budget and blocks over-budget payloads before network access. `DeepSeekAdapter` then sends a non-streaming HTTPS request through Obsidian `requestUrl`, explicitly disables thinking, applies a 120-second local timeout, and parses HTTP status before response details. The timeout only stops local waiting/acceptance of late results; it does not cancel remote processing.
 5. Discussion responses are parsed by the plugin's isolated Markdown renderer. It does not invoke Obsidian or third-party post-processors, accepts no raw HTML, and never auto-loads images or Obsidian embeds. A `length` response is stored as raw partial content plus separate incomplete metadata and can be continued manually against the same note hash.
 6. Edit responses are treated as untrusted JSON and must pass local validation. Non-`stop` and `needs_segmentation` responses never become proposals; the user may start one bounded full regeneration with a higher output budget.
 
@@ -29,10 +29,14 @@ Before Apply, the plugin verifies:
 
 Selected edits are compiled locally and applied in one Obsidian editor transaction. Revert is offered only while the live text exactly equals the known post-apply result.
 
+Apply and Revert have two side effects: the editor transaction and persistence of the updated history. They report editor success separately from a history-save failure. History writes are serialized by revision, and an explicit **Retry save** action is available while a save remains pending. Editor-change events update stale/revert state without re-rendering the whole conversation; rendered Markdown HTML is cached so scroll position is preserved.
+
 ## Secrets and persistence
 
 - The API key lives in Obsidian SecretStorage. Plugin `data.json` stores only the secret identifier.
 - `data.json` also stores non-secret settings and up to 50 locally named conversations, with at most 200 persisted user/assistant messages per conversation.
+- Persisted history is bounded to 5 MiB per conversation and 20 MiB overall; individual conversations or all history can be deleted. Note rename updates the bound path and associated history.
+- All settings fields are sanitized on load. Request-size budgeting is a conservative heuristic, not an official tokenizer count.
 - Conversation history may contain private note-derived material and should be protected like the Vault itself.
 - Pending proposals and revert snapshots remain memory-only.
 - Edit-retry state remains memory-only. Finish reason, note hash, completion state, and numeric usage may be stored with local conversation messages; raw reasoning content is never stored.
