@@ -1,4 +1,4 @@
-# Current Note AI v0.1.5 (Unreleased)
+# Current Note AI v0.1.5
 
 Current Note AI v0.1.5 adds explicit output-budget control and safe recovery when DeepSeek stops at the generation limit.
 
