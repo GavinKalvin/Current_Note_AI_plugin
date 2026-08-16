@@ -17,7 +17,6 @@ function completionRequest() {
       model: "deepseek-chat",
       maxTokens: 100,
       temperature: 0.2,
-      thinking: "disabled" as const,
       responseFormat: "text" as const,
     },
   };

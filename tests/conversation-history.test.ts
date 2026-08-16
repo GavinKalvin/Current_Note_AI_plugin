@@ -101,6 +101,49 @@ describe("conversation history persistence", () => {
     expect(message?.usage?.reasoningTokens).toBe(1_024);
   });
 
+  it("preserves valid provider source metadata through sanitize and upsert", () => {
+    const saved = conversation("source", 10);
+    saved.messages[0] = {
+      ...saved.messages[0]!,
+      role: "assistant",
+      providerId: "kimi",
+      modelId: "  kimi-k2.6  ",
+    };
+
+    const sanitized = sanitizeConversationHistory([saved]);
+    expect(sanitized[0]?.messages[0]).toMatchObject({ providerId: "kimi", modelId: "kimi-k2.6" });
+
+    const upserted = upsertConversationHistory([], saved);
+    expect(upserted[0]?.messages[0]).toMatchObject({ providerId: "kimi", modelId: "kimi-k2.6" });
+  });
+
+  it("drops malformed provider source metadata without affecting the message", () => {
+    const saved = conversation("invalid-source", 10);
+    saved.messages[0] = {
+      ...saved.messages[0]!,
+      providerId: "openai" as never,
+      modelId: ` ${"x".repeat(201)} `,
+    };
+
+    const [result] = sanitizeConversationHistory([saved]);
+    expect(result?.messages[0]).not.toHaveProperty("providerId");
+    expect(result?.messages[0]).not.toHaveProperty("modelId");
+    expect(result?.messages[0]?.content).toBe("Message invalid-source");
+  });
+
+  it("keeps providerId but drops a missing or invalid modelId", () => {
+    const saved = conversation("provider-only", 10);
+    saved.messages[0] = {
+      ...saved.messages[0]!,
+      providerId: "deepseek",
+      modelId: "   ",
+    };
+
+    const [result] = sanitizeConversationHistory([saved]);
+    expect(result?.messages[0]).toMatchObject({ providerId: "deepseek" });
+    expect(result?.messages[0]).not.toHaveProperty("modelId");
+  });
+
   it("bounds the serialized size of one saved conversation", () => {
     const oversized = conversation("large", 10);
     oversized.messages = Array.from({ length: 12 }, (_, index) => ({

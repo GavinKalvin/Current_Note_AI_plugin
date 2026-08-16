@@ -1,4 +1,10 @@
 export type ProviderRole = "system" | "user" | "assistant";
+export type ProviderId = "deepseek" | "kimi";
+
+export interface ModelRef {
+  providerId: ProviderId;
+  modelId: string;
+}
 
 export interface ProviderMessage {
   role: ProviderRole;
@@ -8,8 +14,7 @@ export interface ProviderMessage {
 export interface CompletionOptions {
   model: string;
   maxTokens: number;
-  temperature: number;
-  thinking: "enabled" | "disabled";
+  temperature?: number;
   responseFormat: "text" | "json";
 }
 
@@ -35,11 +40,25 @@ export interface CompletionResponse {
 export interface ProviderModel {
   id: string;
   ownedBy?: string;
+  contextWindowTokens?: number;
+  supportsReasoning?: boolean;
 }
 
 export interface ProviderAdapter {
+  readonly id: ProviderId;
+  readonly displayName: string;
   listModels(apiKey: string): Promise<ProviderModel[]>;
   complete(apiKey: string, request: CompletionRequest): Promise<CompletionResponse>;
+}
+
+export interface ProviderModelCatalog {
+  models: ProviderModel[];
+  lastSuccessfulRefreshAt: number;
+}
+
+export interface ProviderConsentGrant {
+  disclosureRevision: number;
+  acceptedAt: number;
 }
 
 export interface ConversationMessage {
@@ -53,6 +72,8 @@ export interface ConversationMessage {
   usage?: CompletionUsage;
   noteHash?: string;
   continuationCount?: number;
+  providerId?: ProviderId;
+  modelId?: string;
 }
 
 export interface SavedConversation {

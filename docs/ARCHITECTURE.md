@@ -2,14 +2,14 @@
 
 ## Objective
 
-Current Note AI lets a user discuss or revise exactly one explicitly bound Markdown note. The provider may propose text, but it cannot choose a file, execute a command, search the Vault, or write directly to the editor.
+Current Note AI lets a user discuss or revise exactly one explicitly bound Markdown note through DeepSeek or Kimi. Both providers appear in the same model dropdown; there is no separate provider-selection button. The provider may propose text, but it cannot choose a file, execute a command, search the Vault, or write directly to the editor.
 
 ## Request path
 
 1. `CurrentDocumentGate` binds a concrete Obsidian `WorkspaceLeaf`, `TFile`, and path.
 2. Immediately before a request, the gate verifies that the same leaf still exposes the same file and captures the complete unsaved editor text.
 3. The prompt builder combines that snapshot, the in-memory conversation, the user's request, and a budget-aware completion contract.
-4. The view request coordinator estimates a conservative 64,000-token request budget and blocks over-budget payloads before network access. `DeepSeekAdapter` then sends a non-streaming HTTPS request through Obsidian `requestUrl`, explicitly disables thinking, applies a 120-second local timeout, and parses HTTP status before response details. The timeout only stops local waiting/acceptance of late results; it does not cancel remote processing.
+4. The view request coordinator estimates a conservative request budget from the selected model catalog (64,000-token fallback for DeepSeek; 256,000-token cap for Kimi K2.6) and blocks over-budget payloads before network access. The selected provider adapter sends a non-streaming HTTPS request through Obsidian `requestUrl`. Both adapters explicitly disable thinking and enforce a 120-second local timeout; only DeepSeek uses the configured temperature. Kimi supports only `/models`-verified `kimi-k2.6`. The timeout only stops local waiting/acceptance of late results; it does not cancel remote processing.
 5. Discussion responses are parsed by the plugin's isolated Markdown renderer. It does not invoke Obsidian or third-party post-processors, accepts no raw HTML, and never auto-loads images or Obsidian embeds. A `length` response is stored as raw partial content plus separate incomplete metadata and can be continued manually against the same note hash.
 6. Edit responses are treated as untrusted JSON and must pass local validation. Non-`stop` and `needs_segmentation` responses never become proposals; the user may start one bounded full regeneration with a higher output budget.
 
@@ -33,7 +33,10 @@ Apply and Revert have two side effects: the editor transaction and persistence o
 
 ## Secrets and persistence
 
-- The API key lives in Obsidian SecretStorage. Plugin `data.json` stores only the secret identifier.
+- Each provider has its own API key and connection test. The API keys live in Obsidian SecretStorage; plugin `data.json` stores only the secret identifiers.
+- Provider-level privacy consent covers disclosure of note content and cross-provider conversation history. Conversation messages retain their provider/model source.
+- Provider model catalogs refresh independently; a failed refresh retains the last successful catalog.
+- Legacy v0.1.5 DeepSeek settings migrate without loss and retain rollback-compatible DeepSeek shadow fields.
 - `data.json` also stores non-secret settings and up to 50 locally named conversations, with at most 200 persisted user/assistant messages per conversation.
 - Persisted history is bounded to 5 MiB per conversation and 20 MiB overall; individual conversations or all history can be deleted. Note rename updates the bound path and associated history.
 - All settings fields are sanitized on load. Request-size budgeting is a conservative heuristic, not an official tokenizer count.
@@ -43,6 +46,6 @@ Apply and Revert have two side effects: the editor transaction and persistence o
 
 ## Network boundary
 
-Opening the view, selecting a cached model, opening History, loading a conversation, or applying a validated proposal does not contact DeepSeek. `/models` refresh sends credentials but no note content. Send and Propose changes transmit the complete current Markdown snapshot and relevant conversation messages after user consent.
+Opening the view, selecting a cached model, opening History, loading a conversation, or applying a validated proposal does not contact a provider. `/models` refresh sends that provider's credentials but no note content. Send and Propose changes transmit the complete current Markdown snapshot and relevant conversation messages after provider-specific consent.
 
 The plugin has no telemetry, background provider calls, automatic retries, model-callable tools, or access to linked notes, embeds, attachments, Dataview results, PDFs, Canvas files, or the wider Vault. Continue and edit regeneration are always explicit user actions and create new paid provider requests.

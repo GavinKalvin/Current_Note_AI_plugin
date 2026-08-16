@@ -6,9 +6,21 @@ import {
   SecretComponent,
   Setting,
 } from "obsidian";
-import type { SavedConversation } from "./types";
+import type {
+  ModelRef,
+  ProviderConsentGrant,
+  ProviderId,
+  ProviderModelCatalog,
+  SavedConversation,
+} from "./types";
 
 export interface CurrentNoteAiSettings {
+  schemaVersion: 2;
+  selectedModel: ModelRef;
+  kimiSecretId: string;
+  providerCatalogs: Record<ProviderId, ProviderModelCatalog>;
+  providerConsents: Partial<Record<ProviderId, ProviderConsentGrant>>;
+  // Legacy DeepSeek shadow fields retained for rollback compatibility.
   secretId: string;
   model: string;
   availableModels: string[];
@@ -21,6 +33,23 @@ export interface CurrentNoteAiSettings {
 }
 
 export const DEFAULT_SETTINGS: CurrentNoteAiSettings = {
+  schemaVersion: 2,
+  selectedModel: { providerId: "deepseek", modelId: "deepseek-v4-flash" },
+  kimiSecretId: "",
+  providerCatalogs: {
+    deepseek: {
+      models: [
+        { id: "deepseek-v4-flash", contextWindowTokens: 64_000 },
+        { id: "deepseek-v4-pro", contextWindowTokens: 64_000 },
+      ],
+      lastSuccessfulRefreshAt: 0,
+    },
+    kimi: {
+      models: [],
+      lastSuccessfulRefreshAt: 0,
+    },
+  },
+  providerConsents: {},
   secretId: "",
   model: "deepseek-v4-flash",
   availableModels: ["deepseek-v4-flash", "deepseek-v4-pro"],
@@ -35,7 +64,8 @@ export const DEFAULT_SETTINGS: CurrentNoteAiSettings = {
 export interface SettingsHost {
   settings: CurrentNoteAiSettings;
   saveSettings(): Promise<void>;
-  testConnection(): Promise<string[]>;
+  testConnection(providerId: ProviderId): Promise<string[]>;
+  selectModel(model: ModelRef): Promise<void>;
 }
 
 export class CurrentNoteAiSettingTab extends PluginSettingTab {
@@ -73,13 +103,20 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Model")
-      .setDesc("This model is also selectable from the top of the AI sidebar. Use Test connection to refresh the available list.")
+      .setDesc("Enter a DeepSeek model ID. Use Test connection to verify the key and refresh the available list.")
       .addText((text) => text
         .setPlaceholder("deepseek-v4-flash")
         .setValue(this.host.settings.model)
         .onChange(async (value) => {
-          this.host.settings.model = value.trim();
-          await this.saveWithNotice();
+          const modelId = value.trim();
+          if (!modelId) return;
+          try {
+            await this.host.selectModel({ providerId: "deepseek", modelId });
+          } catch (error) {
+            new Notice(error instanceof Error
+              ? `DeepSeek model selection failed: ${error.message}`
+              : "DeepSeek model selection failed.");
+          }
         }));
 
     new Setting(containerEl)
@@ -90,10 +127,43 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         .onClick(async () => {
           button.setDisabled(true).setButtonText("Testing…");
           try {
-            const models = await this.host.testConnection();
+            const models = await this.host.testConnection("deepseek");
             new Notice(`DeepSeek connected. Available models: ${models.join(", ")}`);
           } catch (error) {
-            new Notice(error instanceof Error ? error.message : "DeepSeek connection failed.");
+            new Notice(error instanceof Error
+              ? `DeepSeek connection failed: ${error.message}`
+              : "DeepSeek connection failed.");
+          } finally {
+            button.setDisabled(false).setButtonText("Test");
+          }
+        }));
+
+    new Setting(containerEl).setName("Kimi").setHeading();
+
+    new Setting(containerEl)
+      .setName("API key")
+      .setDesc("Choose or create a vault-scoped secret reference. The key is not stored in plugin data.json.")
+      .addComponent((element) => new SecretComponent(this.app, element)
+        .setValue(this.host.settings.kimiSecretId)
+        .onChange(async (value) => {
+          this.host.settings.kimiSecretId = value;
+          await this.saveWithNotice();
+        }));
+
+    new Setting(containerEl)
+      .setName("Test connection")
+      .setDesc("Queries Kimi /models without sending note content. This plugin currently supports Kimi K2.6.")
+      .addButton((button) => button
+        .setButtonText("Test")
+        .onClick(async () => {
+          button.setDisabled(true).setButtonText("Testing…");
+          try {
+            const models = await this.host.testConnection("kimi");
+            new Notice(`Kimi connected. Supported models: ${models.join(", ")}`);
+          } catch (error) {
+            new Notice(error instanceof Error
+              ? `Kimi connection failed: ${error.message}`
+              : "Kimi connection failed.");
           } finally {
             button.setDisabled(false).setButtonText("Test");
           }
@@ -113,15 +183,15 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         }));
 
     const temperatureSetting = new Setting(containerEl)
-      .setName("Temperature")
-      .setDesc(`${this.host.settings.temperature.toFixed(1)} · requests explicitly use non-thinking mode so this setting is effective`)
+      .setName("DeepSeek temperature")
+      .setDesc(`${this.host.settings.temperature.toFixed(1)} · applies to DeepSeek requests only; Kimi uses a fixed request strategy`)
       .addSlider((slider) => slider
         .setLimits(0, 1.5, 0.1)
         .setDynamicTooltip()
         .setValue(this.host.settings.temperature)
         .onChange(async (value) => {
           this.host.settings.temperature = value;
-          temperatureSetting.setDesc(`${value.toFixed(1)} · requests explicitly use non-thinking mode so this setting is effective`);
+          temperatureSetting.setDesc(`${value.toFixed(1)} · applies to DeepSeek requests only; Kimi uses a fixed request strategy`);
           await this.saveWithNotice();
         }));
 
@@ -157,11 +227,20 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
       .setName("Full-note disclosure")
       .setDesc("Show the consent dialog again before the next request.")
       .addButton((button) => button
-        .setButtonText("Reset consent")
+        .setButtonText("Reset DeepSeek consent")
         .onClick(async () => {
+          delete this.host.settings.providerConsents.deepseek;
           this.host.settings.consentAcknowledged = false;
           if (await this.saveWithNotice()) {
-            new Notice("Consent will be requested again before sending note content.");
+            new Notice("DeepSeek consent will be requested again before sending note content.");
+          }
+        }))
+      .addButton((button) => button
+        .setButtonText("Reset Kimi consent")
+        .onClick(async () => {
+          delete this.host.settings.providerConsents.kimi;
+          if (await this.saveWithNotice()) {
+            new Notice("Kimi consent will be requested again before sending note content.");
           }
         }));
   }

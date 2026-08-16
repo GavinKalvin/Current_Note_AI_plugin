@@ -135,6 +135,10 @@ function sanitizeMessage(value: unknown): ConversationMessage | null {
   const noteHash = readString(value.noteHash, 200, true) ?? undefined;
   const continuationCount = readNonNegativeInteger(value.continuationCount, 100);
   const usage = sanitizeUsage(value.usage);
+  const providerId = value.providerId === "deepseek" || value.providerId === "kimi"
+    ? value.providerId
+    : undefined;
+  const modelId = providerId === undefined ? undefined : readTrimmedString(value.modelId, 200);
 
   return {
     id,
@@ -147,6 +151,7 @@ function sanitizeMessage(value: unknown): ConversationMessage | null {
     noteHash,
     continuationCount,
     usage,
+    ...(providerId === undefined ? {} : { providerId, ...(modelId === undefined ? {} : { modelId }) }),
   };
 }
 
@@ -175,6 +180,12 @@ function readString(value: unknown, maxLength: number, allowEmpty = false): stri
   if (typeof value !== "string" || value.length > maxLength) return null;
   if (!allowEmpty && value.length === 0) return null;
   return value;
+}
+
+function readTrimmedString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 && trimmed.length <= maxLength ? trimmed : undefined;
 }
 
 function readTimestamp(value: unknown): number | null {

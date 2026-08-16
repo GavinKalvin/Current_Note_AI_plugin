@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "obsidian";
 import { hashText } from "../src/core/hash";
+import type { ModelRef, ProviderAdapter } from "../src/types";
 import { CurrentNoteAiView } from "../src/view";
 
-function createView(options: { persistFails?: boolean; noteText?: string } = {}) {
+function createView(options: {
+  persistFails?: boolean;
+  noteText?: string;
+  selectedModel?: ModelRef;
+} = {}) {
   const noteText = options.noteText ?? "before";
   const editor = {
     value: noteText,
@@ -20,8 +25,39 @@ function createView(options: { persistFails?: boolean; noteText?: string } = {})
   const editorView = new MarkdownView({} as never);
   Object.assign(editorView, { editor, file: { path: "note.md", basename: "note" } });
   const leaf = { view: editorView };
+  const deepseek = {
+    id: "deepseek",
+    displayName: "DeepSeek",
+    listModels: vi.fn(async () => [{ id: "deepseek-v4-flash", contextWindowTokens: 64_000 }]),
+    complete: vi.fn(async () => ({ content: "DeepSeek response", finishReason: "stop" })),
+  } satisfies ProviderAdapter;
+  const kimi = {
+    id: "kimi",
+    displayName: "Kimi",
+    listModels: vi.fn(async () => [{ id: "kimi-k2.6", contextWindowTokens: 256_000 }]),
+    complete: vi.fn(async () => ({ content: "Kimi response", finishReason: "stop" })),
+  } satisfies ProviderAdapter;
+  const selectedModel = options.selectedModel ?? { providerId: "deepseek", modelId: "deepseek-v4-flash" };
   const plugin = {
     settings: {
+      schemaVersion: 2,
+      selectedModel,
+      kimiSecretId: "kimi-secret",
+      providerCatalogs: {
+        deepseek: {
+          models: [{ id: "deepseek-v4-flash", contextWindowTokens: 64_000 }],
+          lastSuccessfulRefreshAt: 1,
+        },
+        kimi: {
+          models: [{ id: "kimi-k2.6", contextWindowTokens: 256_000 }],
+          lastSuccessfulRefreshAt: 1,
+        },
+      },
+      providerConsents: {
+        deepseek: { disclosureRevision: 1, acceptedAt: 1 },
+        kimi: { disclosureRevision: 1, acceptedAt: 1 },
+      },
+      secretId: "deepseek-secret",
       conversationHistory: [],
       model: "deepseek-v4-flash",
       availableModels: ["deepseek-v4-flash"],
@@ -45,8 +81,18 @@ function createView(options: { persistFails?: boolean; noteText?: string } = {})
     upsertConversation: vi.fn(async () => {
       if (options.persistFails ?? true) throw new Error("disk full");
     }),
-    provider: { complete: vi.fn() },
-    getApiKey: vi.fn(() => "secret"),
+    providers: { deepseek, kimi },
+    resolveRequestContext: vi.fn((model: ModelRef = selectedModel) => {
+      const adapter = model.providerId === "kimi" ? kimi : deepseek;
+      return {
+        model,
+        adapter,
+        displayName: adapter.displayName,
+        contextWindowTokens: model.providerId === "kimi" ? 256_000 : 64_000,
+      };
+    }),
+    getApiKey: vi.fn((providerId: "deepseek" | "kimi") => `${providerId}-secret`),
+    saveSettings: vi.fn(async () => undefined),
   };
   const view = new CurrentNoteAiView(leaf as never, plugin as never);
   const bound = {
@@ -55,7 +101,7 @@ function createView(options: { persistFails?: boolean; noteText?: string } = {})
     filePath: "note.md",
   };
   Object.assign(view as object, { bound });
-  return { view, editor, editorView, plugin };
+  return { view, editor, editorView, plugin, deepseek, kimi };
 }
 
 describe("CurrentNoteAiView lifecycle hardening", () => {
@@ -124,7 +170,7 @@ describe("CurrentNoteAiView lifecycle hardening", () => {
   });
 
   it("blocks an over-budget request before invoking the provider", async () => {
-    const { view, plugin } = createView({
+    const { view, deepseek, kimi } = createView({
       persistFails: false,
       noteText: "x".repeat(300_000),
     });
@@ -133,8 +179,62 @@ describe("CurrentNoteAiView lifecycle hardening", () => {
 
     await (view as never as { sendDiscussion(): Promise<void> }).sendDiscussion();
 
-    expect(plugin.provider.complete).not.toHaveBeenCalled();
+    expect(deepseek.complete).not.toHaveBeenCalled();
+    expect(kimi.complete).not.toHaveBeenCalled();
     expect((view as never as { errorMessage: string }).errorMessage)
       .toContain("above the conservative 64,000-token context limit");
+  });
+
+  it("routes discussion to Kimi when the structured selected model is Kimi", async () => {
+    const { view, plugin, deepseek, kimi } = createView({
+      persistFails: false,
+      selectedModel: { providerId: "kimi", modelId: "kimi-k2.6" },
+    });
+    vi.spyOn(view as never, "render").mockImplementation(() => undefined);
+    Object.assign(view as object, { draft: "Analyze this note" });
+
+    await (view as never as { sendDiscussion(): Promise<void> }).sendDiscussion();
+
+    expect(kimi.complete).toHaveBeenCalledOnce();
+    expect(deepseek.complete).not.toHaveBeenCalled();
+    expect(plugin.getApiKey).toHaveBeenCalledWith("kimi");
+    expect(plugin.upsertConversation).toHaveBeenCalled();
+  });
+
+  it("continues an incomplete DeepSeek response with its original model after switching to Kimi", async () => {
+    const { view, plugin, deepseek, kimi } = createView({
+      persistFails: false,
+      selectedModel: { providerId: "kimi", modelId: "kimi-k2.6" },
+    });
+    vi.spyOn(view as never, "render").mockImplementation(() => undefined);
+    const incomplete = {
+      id: "assistant-1",
+      role: "assistant" as const,
+      content: "A partial DeepSeek answer",
+      createdAt: 1,
+      requestKind: "discussion" as const,
+      finishReason: "length",
+      generationState: "incomplete" as const,
+      noteHash: hashText("before"),
+      continuationCount: 0,
+      providerId: "deepseek" as const,
+      modelId: "deepseek-v4-flash",
+    };
+    Object.assign(view as object, { messages: [incomplete] });
+    deepseek.complete.mockResolvedValueOnce({
+      content: "A partial DeepSeek answer with continuation",
+      finishReason: "stop",
+    });
+
+    await (view as never as { continueDiscussion(message: typeof incomplete): Promise<void> })
+      .continueDiscussion(incomplete);
+
+    expect(deepseek.complete).toHaveBeenCalledOnce();
+    expect(kimi.complete).not.toHaveBeenCalled();
+    expect(plugin.resolveRequestContext).toHaveBeenCalledWith({
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+    });
+    expect(plugin.getApiKey).toHaveBeenCalledWith("deepseek");
   });
 });

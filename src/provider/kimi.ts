@@ -8,8 +8,9 @@ import type {
 import { parseCompletionUsage } from "../core/completion";
 import { ProviderRequestError } from "./errors";
 
-const DEFAULT_BASE_URL = "https://api.deepseek.com";
+const DEFAULT_BASE_URL = "https://api.moonshot.ai/v1";
 const DEFAULT_TIMEOUT_MS = 120_000;
+const KIMI_MODEL = "kimi-k2.6";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -17,10 +18,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function parseEnvelope(
-  text: string,
-  operation: "list-models" | "complete",
-): Record<string, unknown> {
+function parseEnvelope(text: string, operation: "list-models" | "complete"): Record<string, unknown> {
   try {
     const parsed = JSON.parse(text.trim());
     const record = asRecord(parsed);
@@ -28,10 +26,10 @@ function parseEnvelope(
     return record;
   } catch {
     throw new ProviderRequestError(
-      "deepseek",
+      "kimi",
       operation,
       "invalid-response",
-      "DeepSeek returned a response that could not be parsed.",
+      "Kimi returned a response that could not be parsed.",
     );
   }
 }
@@ -41,7 +39,7 @@ function providerErrorMessage(envelope: Record<string, unknown>, status: number)
   const message = error?.message;
   return typeof message === "string" && message.length > 0
     ? message.slice(0, 500)
-    : `DeepSeek request failed with HTTP ${status}.`;
+    : `Kimi request failed with HTTP ${status}.`;
 }
 
 function headerValue(headers: Record<string, string>, name: string): string | undefined {
@@ -49,9 +47,9 @@ function headerValue(headers: Record<string, string>, name: string): string | un
   return key ? headers[key] : undefined;
 }
 
-export class DeepSeekAdapter implements ProviderAdapter {
-  readonly id = "deepseek" as const;
-  readonly displayName = "DeepSeek";
+export class KimiAdapter implements ProviderAdapter {
+  readonly id = "kimi" as const;
+  readonly displayName = "Kimi";
   private readonly timeoutMs: number;
 
   constructor(
@@ -59,7 +57,7 @@ export class DeepSeekAdapter implements ProviderAdapter {
     timeoutMs = DEFAULT_TIMEOUT_MS,
   ) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-      throw new Error("DeepSeek timeoutMs must be a finite positive number.");
+      throw new Error("Kimi timeoutMs must be a finite positive number.");
     }
     this.timeoutMs = timeoutMs;
   }
@@ -69,16 +67,13 @@ export class DeepSeekAdapter implements ProviderAdapter {
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         reject(new ProviderRequestError(
-          "deepseek",
-          typeof options !== "string" && options.method === "GET"
-            ? "list-models"
-            : "complete",
+          "kimi",
+          (typeof options === "string" || options.method === "GET") ? "list-models" : "complete",
           "timeout",
-          "DeepSeek request timed out locally and may still be processed remotely.",
+          "Kimi request timed out locally and may still be processed remotely.",
         ));
       }, this.timeoutMs);
     });
-
     try {
       return await Promise.race([requestUrl(options), timeout]);
     } finally {
@@ -95,103 +90,65 @@ export class DeepSeekAdapter implements ProviderAdapter {
     });
     if (response.status < 200 || response.status >= 300) {
       let envelope: Record<string, unknown> = {};
-      try {
-        envelope = parseEnvelope(response.text, "list-models");
-      } catch {
-        // Preserve the HTTP-specific error when an error response is not JSON.
-      }
+      try { envelope = parseEnvelope(response.text, "list-models"); } catch { /* preserve HTTP error */ }
       throw new ProviderRequestError(
-        "deepseek",
-        "list-models",
-        `http-${response.status}`,
-        providerErrorMessage(envelope, response.status),
-        response.status,
+        "kimi", "list-models", `http-${response.status}`,
+        providerErrorMessage(envelope, response.status), response.status,
         headerValue(response.headers, "retry-after"),
       );
     }
     const envelope = parseEnvelope(response.text, "list-models");
-
     if (!Array.isArray(envelope.data)) {
-      throw new ProviderRequestError(
-        "deepseek",
-        "list-models",
-        "invalid-response",
-        "DeepSeek did not return a model list.",
-      );
+      throw new ProviderRequestError("kimi", "list-models", "invalid-response", "Kimi did not return a model list.");
     }
-
     return envelope.data.flatMap((item) => {
       const model = asRecord(item);
       if (!model || typeof model.id !== "string") return [];
+      const contextLength = model.context_length;
       return [{
         id: model.id,
         ownedBy: typeof model.owned_by === "string" ? model.owned_by : undefined,
+        contextWindowTokens: typeof contextLength === "number" && Number.isFinite(contextLength) && contextLength > 0
+          ? contextLength : undefined,
+        supportsReasoning: typeof model.supports_reasoning === "boolean" ? model.supports_reasoning : undefined,
       }];
     });
   }
 
   async complete(apiKey: string, request: CompletionRequest): Promise<CompletionResponse> {
+    if (request.options.model !== KIMI_MODEL) {
+      throw new ProviderRequestError("kimi", "complete", "unsupported-model", `Kimi does not support model ${request.options.model}.`);
+    }
     const body: Record<string, unknown> = {
       model: request.options.model,
       messages: request.messages,
       max_tokens: request.options.maxTokens,
-      temperature: request.options.temperature,
-      thinking: { type: "disabled" },
       stream: false,
+      thinking: { type: "disabled" },
     };
-    if (request.options.responseFormat === "json") {
-      body.response_format = { type: "json_object" };
-    }
+    if (request.options.responseFormat === "json") body.response_format = { type: "json_object" };
 
     const response = await this.request({
-      url: `${this.baseUrl}/chat/completions`,
-      method: "POST",
-      contentType: "application/json",
-      headers: { Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(body),
-      throw: false,
+      url: `${this.baseUrl}/chat/completions`, method: "POST", contentType: "application/json",
+      headers: { Authorization: `Bearer ${apiKey}` }, body: JSON.stringify(body), throw: false,
     });
     if (response.status < 200 || response.status >= 300) {
       let envelope: Record<string, unknown> = {};
-      try {
-        envelope = parseEnvelope(response.text, "complete");
-      } catch {
-        // Preserve the HTTP-specific error when an error response is not JSON.
-      }
+      try { envelope = parseEnvelope(response.text, "complete"); } catch { /* preserve HTTP error */ }
       throw new ProviderRequestError(
-        "deepseek",
-        "complete",
-        `http-${response.status}`,
-        providerErrorMessage(envelope, response.status),
-        response.status,
+        "kimi", "complete", `http-${response.status}`,
+        providerErrorMessage(envelope, response.status), response.status,
         headerValue(response.headers, "retry-after"),
       );
     }
     const envelope = parseEnvelope(response.text, "complete");
-
-    const firstChoice = Array.isArray(envelope.choices)
-      ? asRecord(envelope.choices[0])
-      : null;
+    const firstChoice = Array.isArray(envelope.choices) ? asRecord(envelope.choices[0]) : null;
     const message = asRecord(firstChoice?.message);
     const content = message?.content;
     const finishReason = firstChoice?.finish_reason;
-    if (typeof content !== "string") {
-      throw new ProviderRequestError(
-        "deepseek",
-        "complete",
-        "empty-response",
-        "DeepSeek returned an empty response.",
-      );
+    if (typeof content !== "string" || (content.trim().length === 0 && finishReason === "stop")) {
+      throw new ProviderRequestError("kimi", "complete", "empty-response", "Kimi returned an empty response.");
     }
-    if (content.trim().length === 0 && finishReason === "stop") {
-      throw new ProviderRequestError(
-        "deepseek",
-        "complete",
-        "empty-response",
-        "DeepSeek returned an empty completed response.",
-      );
-    }
-
     return {
       content,
       finishReason: typeof finishReason === "string" ? finishReason : "unknown",

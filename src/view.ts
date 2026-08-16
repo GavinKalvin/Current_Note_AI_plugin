@@ -17,12 +17,15 @@ import {
 import type { BoundMarkdownDocument } from "./context";
 import { CurrentDocumentError } from "./context";
 import { FullNoteConsentModal } from "./modals";
-import { ProviderRequestError } from "./provider/deepseek";
+import { ProviderRequestError } from "./provider/errors";
 import type CurrentNoteAiPlugin from "./main";
+import type { ProviderRequestContext } from "./main";
 import type {
+  CompletionOptions,
   ConversationMessage,
   DocumentSnapshot,
   EditProposalCandidate,
+  ModelRef,
   ProviderMessage,
   SavedConversation,
 } from "./types";
@@ -45,6 +48,7 @@ interface EditRetryState {
   nextMaxTokens: number | null;
   retryAttempted: boolean;
   reason: string;
+  model: ModelRef;
 }
 
 interface AppliedChange {
@@ -63,6 +67,7 @@ export class CurrentNoteAiView extends ItemView {
   private errorMessage = "";
   private busy = false;
   private modelLoading = false;
+  private activeRequestProviderName = "AI provider";
   private historyOpen = false;
   private activeConversationId: string | null = null;
   private activeConversationTitle = "";
@@ -252,34 +257,59 @@ export class CurrentNoteAiView extends ItemView {
       this.render();
     });
     const modelBar = title.createDiv({ cls: "current-note-ai-model-bar" });
-    modelBar.createSpan({ cls: "current-note-ai-provider", text: "DeepSeek" });
+    modelBar.createSpan({ cls: "current-note-ai-provider", text: "Model" });
 
     const modelSelect = modelBar.createEl("select", {
       cls: "current-note-ai-model-select",
       attr: {
-        "aria-label": "DeepSeek model",
-        title: "Model used for the next DeepSeek request",
+        "aria-label": "AI model",
+        title: "Model used for the next AI request",
       },
     });
-    const modelOptions = [...new Set([
-      this.plugin.settings.model,
-      ...this.plugin.settings.availableModels,
-    ].filter((model) => model.trim().length > 0))];
-    for (const model of modelOptions) {
-      modelSelect.createEl("option", { text: model, value: model });
+    const optionModels = new Map<string, ModelRef>();
+    let selectedOption = "";
+    let optionSequence = 0;
+    for (const providerId of ["deepseek", "kimi"] as const) {
+      const providerLabel = providerId === "deepseek" ? "DeepSeek" : "Kimi";
+      const group = modelSelect.createEl("optgroup", { attr: { label: providerLabel } });
+      const catalogModels = this.plugin.settings.providerCatalogs[providerId].models;
+      const selected = this.plugin.settings.selectedModel.providerId === providerId
+        ? this.plugin.settings.selectedModel
+        : null;
+      const models = [...catalogModels];
+      if (selected && !models.some((model) => model.id === selected.modelId)) {
+        models.unshift({ id: selected.modelId });
+      }
+      for (const model of models) {
+        const ref = { providerId, modelId: model.id } satisfies ModelRef;
+        const optionKey = `model-${optionSequence++}`;
+        optionModels.set(optionKey, ref);
+        const unavailable = providerId === "kimi"
+          && selected?.modelId === model.id
+          && !catalogModels.some((candidate) => candidate.id === model.id);
+        const option = group.createEl("option", {
+          text: unavailable ? `${model.id} (unavailable)` : model.id,
+          value: optionKey,
+        });
+        if (unavailable) option.disabled = true;
+        if (this.sameModelRef(ref, this.plugin.settings.selectedModel)) {
+          selectedOption = optionKey;
+        }
+      }
     }
-    modelSelect.value = this.plugin.settings.model;
+    modelSelect.value = selectedOption;
     modelSelect.disabled = this.busy || this.modelLoading;
     modelSelect.addEventListener("change", () => {
-      void this.chooseModel(modelSelect.value);
+      const selected = optionModels.get(modelSelect.value);
+      if (selected) void this.chooseModel(selected);
     });
 
     const refreshModels = modelBar.createEl("button", {
       cls: "current-note-ai-model-refresh clickable-icon",
       text: this.modelLoading ? "…" : "↻",
       attr: {
-        "aria-label": "Refresh DeepSeek models",
-        title: "Refresh models from DeepSeek (does not send note content)",
+        "aria-label": "Refresh AI models",
+        title: "Refresh configured provider model lists (does not send note content)",
       },
     });
     refreshModels.disabled = this.busy || this.modelLoading;
@@ -389,7 +419,7 @@ export class CurrentNoteAiView extends ItemView {
     }).format(new Date(timestamp));
   }
 
-  private async chooseModel(model: string): Promise<void> {
+  private async chooseModel(model: ModelRef): Promise<void> {
     try {
       await this.plugin.selectModel(model);
       this.errorMessage = "";
@@ -399,14 +429,34 @@ export class CurrentNoteAiView extends ItemView {
     this.render();
   }
 
+  private sameModelRef(left: ModelRef, right: ModelRef): boolean {
+    return left.providerId === right.providerId && left.modelId === right.modelId;
+  }
+
   private async refreshModels(): Promise<void> {
     if (this.busy || this.modelLoading) return;
     this.modelLoading = true;
     this.errorMessage = "";
     this.render();
     try {
-      await this.plugin.refreshModels();
-      new Notice("DeepSeek model list refreshed.");
+      const summary = await this.plugin.refreshModels();
+      const message = summary.results.map((result) => {
+        if (result.status === "updated") {
+          const excluded = result.excludedCount > 0
+            ? `; ${result.excludedCount} unsupported excluded`
+            : "";
+          return `${result.displayName}: ${result.models.length} updated${excluded}`;
+        }
+        if (result.status === "skipped") return `${result.displayName}: not configured`;
+        return `${result.displayName}: refresh failed, cached list kept`;
+      }).join(" · ");
+      new Notice(message);
+      const failures = summary.results.filter((result) => result.status === "failed");
+      if (failures.length > 0) {
+        this.errorMessage = failures
+          .map((result) => `${result.displayName}: ${result.error ?? "model refresh failed"}`)
+          .join("\n");
+      }
     } catch (error) {
       this.errorMessage = this.describeError(error);
     } finally {
@@ -493,7 +543,7 @@ export class CurrentNoteAiView extends ItemView {
       cls: "current-note-ai-continue-button",
       text: "Continue",
       attr: {
-        title: `Send a new DeepSeek request with up to ${this.plugin.settings.maxTokens.toLocaleString()} additional tokens`,
+        title: `Send a new AI request with up to ${this.plugin.settings.maxTokens.toLocaleString()} additional tokens`,
       },
     });
     continueButton.addEventListener("click", () => void this.continueDiscussion(message));
@@ -514,7 +564,7 @@ export class CurrentNoteAiView extends ItemView {
     const row = container.createDiv({ cls: "current-note-ai-message-row is-assistant" });
     const bubble = row.createDiv({
       cls: "current-note-ai-bubble is-typing",
-      attr: { role: "status", "aria-label": "DeepSeek is responding" },
+      attr: { role: "status", "aria-label": "AI provider is responding" },
     });
     bubble.createSpan();
     bubble.createSpan();
@@ -699,15 +749,40 @@ export class CurrentNoteAiView extends ItemView {
   private cancelLogicalRequest(): void {
     this.requestGeneration += 1;
     this.busy = false;
-    this.errorMessage = "The response will be ignored. DeepSeek may already be processing the request remotely.";
+    this.errorMessage = `The response will be ignored. ${this.activeRequestProviderName} may already be processing the request remotely.`;
     this.render();
   }
 
-  private async ensureConsent(): Promise<boolean> {
-    if (this.plugin.settings.consentAcknowledged) return true;
-    const accepted = await new FullNoteConsentModal(this.app).request();
+  private async ensureConsent(
+    context: ProviderRequestContext,
+    history: readonly ConversationMessage[],
+  ): Promise<boolean> {
+    const includesCrossProviderHistory = history.some((message) => {
+      if (message.role !== "assistant") return false;
+      const sourceProvider = message.providerId ?? "deepseek";
+      return sourceProvider !== context.model.providerId;
+    });
+    const requiredRevision = includesCrossProviderHistory ? 2 : 1;
+    const grant = this.plugin.settings.providerConsents[context.model.providerId];
+    if (grant && grant.disclosureRevision >= requiredRevision) return true;
+
+    const providerHost = context.model.providerId === "deepseek"
+      ? "api.deepseek.com"
+      : "api.moonshot.ai";
+    const accepted = await new FullNoteConsentModal(
+      this.app,
+      context.displayName,
+      providerHost,
+      includesCrossProviderHistory,
+    ).request();
     if (!accepted) return false;
-    this.plugin.settings.consentAcknowledged = true;
+    this.plugin.settings.providerConsents[context.model.providerId] = {
+      disclosureRevision: requiredRevision,
+      acceptedAt: Date.now(),
+    };
+    if (context.model.providerId === "deepseek") {
+      this.plugin.settings.consentAcknowledged = true;
+    }
     await this.plugin.saveSettings();
     return true;
   }
@@ -725,12 +800,33 @@ export class CurrentNoteAiView extends ItemView {
     return snapshot;
   }
 
-  private assertRequestBudget(messages: readonly ProviderMessage[], maxOutputTokens: number): void {
-    const budget = evaluateRequestBudget(messages, maxOutputTokens);
+  private assertRequestBudget(
+    messages: readonly ProviderMessage[],
+    maxOutputTokens: number,
+    context: ProviderRequestContext,
+  ): void {
+    const budget = evaluateRequestBudget(messages, maxOutputTokens, {
+      contextWindowTokens: context.contextWindowTokens,
+    });
     if (budget.fits) return;
     throw new CurrentDocumentError(
-      `This request needs an estimated ${budget.requiredTokens.toLocaleString()} tokens including safety margin, above the conservative ${budget.contextWindowTokens.toLocaleString()}-token context limit. Reduce the current note or output budget before retrying. Nothing was sent.`,
+      `${context.displayName} model ${context.model.modelId} needs an estimated ${budget.requiredTokens.toLocaleString()} tokens including safety margin, above the conservative ${budget.contextWindowTokens.toLocaleString()}-token context limit. Reduce the current note or output budget before retrying. Nothing was sent.`,
     );
+  }
+
+  private completionOptions(
+    context: ProviderRequestContext,
+    maxTokens: number,
+    responseFormat: CompletionOptions["responseFormat"],
+  ): CompletionOptions {
+    return {
+      model: context.model.modelId,
+      maxTokens,
+      responseFormat,
+      ...(context.model.providerId === "deepseek"
+        ? { temperature: this.plugin.settings.temperature }
+        : {}),
+    };
   }
 
   private hasHistoryBindingMismatch(): boolean {
@@ -856,9 +952,11 @@ export class CurrentNoteAiView extends ItemView {
     let generation: number | null = null;
 
     try {
-      if (!await this.ensureConsent()) return;
-      const snapshot = this.captureCurrentSnapshot();
       const history = this.messages.slice();
+      const context = this.plugin.resolveRequestContext();
+      this.activeRequestProviderName = context.displayName;
+      if (!await this.ensureConsent(context, history)) return;
+      const snapshot = this.captureCurrentSnapshot();
       this.messages.push(this.newMessage("user", request));
       this.draft = "";
       this.errorMessage = "";
@@ -873,17 +971,14 @@ export class CurrentNoteAiView extends ItemView {
         request,
         this.plugin.settings.maxTokens,
       );
-      this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens);
-      const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
+      this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens, context);
+      const response = await context.adapter.complete(
+        this.plugin.getApiKey(context.model.providerId),
+        {
         messages: providerMessages,
-        options: {
-          model: this.plugin.settings.model,
-          maxTokens: this.plugin.settings.maxTokens,
-          temperature: this.plugin.settings.temperature,
-          thinking: "disabled",
-          responseFormat: "text",
+          options: this.completionOptions(context, this.plugin.settings.maxTokens, "text"),
         },
-      });
+      );
       if (generation !== this.requestGeneration) return;
 
       this.messages.push(this.newMessage("assistant", response.content, {
@@ -893,6 +988,8 @@ export class CurrentNoteAiView extends ItemView {
         usage: response.usage,
         noteHash: snapshot.hash,
         continuationCount: 0,
+        providerId: context.model.providerId,
+        modelId: context.model.modelId,
       }));
       await this.persistConversation(snapshot);
     } catch (error) {
@@ -912,15 +1009,20 @@ export class CurrentNoteAiView extends ItemView {
     let generation: number | null = null;
 
     try {
-      if (!await this.ensureConsent()) return;
+      const history = this.messages.slice();
+      const originModel = incompleteMessage.providerId && incompleteMessage.modelId
+        ? { providerId: incompleteMessage.providerId, modelId: incompleteMessage.modelId }
+        : this.plugin.settings.selectedModel;
+      const context = this.plugin.resolveRequestContext(originModel);
+      this.activeRequestProviderName = context.displayName;
+      if (!await this.ensureConsent(context, history)) return;
       const snapshot = this.captureCurrentSnapshot();
       if (incompleteMessage.noteHash && incompleteMessage.noteHash !== snapshot.hash) {
         throw new CurrentDocumentError(
-          "The note changed after this incomplete response. Ask again so DeepSeek uses the current text.",
+          `The note changed after this incomplete response. Ask again so ${context.displayName} uses the current text.`,
         );
       }
 
-      const history = this.messages.slice();
       this.errorMessage = "";
       this.busy = true;
       generation = ++this.requestGeneration;
@@ -931,17 +1033,14 @@ export class CurrentNoteAiView extends ItemView {
         history,
         this.plugin.settings.maxTokens,
       );
-      this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens);
-      const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
-        messages: providerMessages,
-        options: {
-          model: this.plugin.settings.model,
-          maxTokens: this.plugin.settings.maxTokens,
-          temperature: this.plugin.settings.temperature,
-          thinking: "disabled",
-          responseFormat: "text",
+      this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens, context);
+      const response = await context.adapter.complete(
+        this.plugin.getApiKey(context.model.providerId),
+        {
+          messages: providerMessages,
+          options: this.completionOptions(context, this.plugin.settings.maxTokens, "text"),
         },
-      });
+      );
       if (generation !== this.requestGeneration) return;
 
       const trimmedContent = trimExactContinuationOverlap(
@@ -950,8 +1049,10 @@ export class CurrentNoteAiView extends ItemView {
       );
       if (!trimmedContent.trim()) {
         throw new ProviderRequestError(
+          context.model.providerId,
+          "complete",
           "empty-continuation",
-          "DeepSeek repeated the previous ending without adding new content. You can try Continue again.",
+          `${context.displayName} repeated the previous ending without adding new content. You can try Continue again.`,
         );
       }
       this.messages.push(this.newMessage("user", "Continue"));
@@ -962,6 +1063,8 @@ export class CurrentNoteAiView extends ItemView {
         usage: response.usage,
         noteHash: snapshot.hash,
         continuationCount: (incompleteMessage.continuationCount ?? 0) + 1,
+        providerId: context.model.providerId,
+        modelId: context.model.modelId,
       }));
       await this.persistConversation(snapshot);
     } catch (error) {
@@ -982,9 +1085,11 @@ export class CurrentNoteAiView extends ItemView {
     let generation: number | null = null;
 
     try {
-      if (!await this.ensureConsent()) return;
-      const snapshot = this.captureCurrentSnapshot();
       const history = this.messages.slice();
+      const context = this.plugin.resolveRequestContext();
+      this.activeRequestProviderName = context.displayName;
+      if (!await this.ensureConsent(context, history)) return;
+      const snapshot = this.captureCurrentSnapshot();
       this.messages.push(this.newMessage("user", request));
       this.draft = "";
       this.errorMessage = "";
@@ -1001,17 +1106,14 @@ export class CurrentNoteAiView extends ItemView {
         request,
         this.plugin.settings.maxTokens,
       );
-      this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens);
-      const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
-        messages: providerMessages,
-        options: {
-          model: this.plugin.settings.model,
-          maxTokens: this.plugin.settings.maxTokens,
-          temperature: this.plugin.settings.temperature,
-          thinking: "disabled",
-          responseFormat: "json",
+      this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens, context);
+      const response = await context.adapter.complete(
+        this.plugin.getApiKey(context.model.providerId),
+        {
+          messages: providerMessages,
+          options: this.completionOptions(context, this.plugin.settings.maxTokens, "json"),
         },
-      });
+      );
       if (generation !== this.requestGeneration) return;
       if (response.finishReason !== "stop") {
         this.editRetry = this.createEditRetryState(
@@ -1020,7 +1122,8 @@ export class CurrentNoteAiView extends ItemView {
           request,
           this.plugin.settings.maxTokens,
           false,
-          `DeepSeek ended with finish_reason=${response.finishReason}. The partial JSON was discarded and cannot be applied.`,
+          `${context.displayName} ended with finish_reason=${response.finishReason}. The partial JSON was discarded and cannot be applied.`,
+          context.model,
         );
         return;
       }
@@ -1040,6 +1143,7 @@ export class CurrentNoteAiView extends ItemView {
             this.plugin.settings.maxTokens,
             false,
             error.message,
+            context.model,
           );
           return;
         }
@@ -1057,6 +1161,8 @@ export class CurrentNoteAiView extends ItemView {
         generationState: "complete",
         usage: response.usage,
         noteHash: snapshot.hash,
+        providerId: context.model.providerId,
+        modelId: context.model.modelId,
       }));
       await this.persistConversation(snapshot);
     } catch (error) {
@@ -1078,6 +1184,7 @@ export class CurrentNoteAiView extends ItemView {
     maxTokensUsed: number,
     retryAttempted: boolean,
     reason: string,
+    model: ModelRef,
   ): EditRetryState {
     return {
       snapshot,
@@ -1087,6 +1194,7 @@ export class CurrentNoteAiView extends ItemView {
       nextMaxTokens: retryAttempted ? null : nextEditRetryBudget(maxTokensUsed),
       retryAttempted,
       reason,
+      model: { ...model },
     };
   }
 
@@ -1096,7 +1204,9 @@ export class CurrentNoteAiView extends ItemView {
     const retryBudget = retry.nextMaxTokens;
 
     try {
-      if (!await this.ensureConsent()) return;
+      const context = this.plugin.resolveRequestContext(retry.model);
+      this.activeRequestProviderName = context.displayName;
+      if (!await this.ensureConsent(context, this.messages)) return;
       const currentSnapshot = this.captureCurrentSnapshot();
       if (currentSnapshot.hash !== retry.snapshot.hash) {
         throw new CurrentDocumentError(
@@ -1117,17 +1227,14 @@ export class CurrentNoteAiView extends ItemView {
         retry.request,
         retryBudget,
       );
-      this.assertRequestBudget(providerMessages, retryBudget);
-      const response = await this.plugin.provider.complete(this.plugin.getApiKey(), {
-        messages: providerMessages,
-        options: {
-          model: this.plugin.settings.model,
-          maxTokens: retryBudget,
-          temperature: this.plugin.settings.temperature,
-          thinking: "disabled",
-          responseFormat: "json",
+      this.assertRequestBudget(providerMessages, retryBudget, context);
+      const response = await context.adapter.complete(
+        this.plugin.getApiKey(context.model.providerId),
+        {
+          messages: providerMessages,
+          options: this.completionOptions(context, retryBudget, "json"),
         },
-      });
+      );
       if (generation !== this.requestGeneration) return;
 
       if (response.finishReason !== "stop") {
@@ -1137,7 +1244,8 @@ export class CurrentNoteAiView extends ItemView {
           retry.request,
           retryBudget,
           true,
-          `The ${retryBudget.toLocaleString()}-token retry also ended with finish_reason=${response.finishReason}. Narrow the edit request before trying again.`,
+          `${context.displayName}'s ${retryBudget.toLocaleString()}-token retry also ended with finish_reason=${response.finishReason}. Narrow the edit request before trying again.`,
+          context.model,
         );
         return;
       }
@@ -1157,6 +1265,7 @@ export class CurrentNoteAiView extends ItemView {
             retryBudget,
             true,
             `${error.message} Narrow the edit request before trying again.`,
+            context.model,
           );
           return;
         }
@@ -1175,6 +1284,8 @@ export class CurrentNoteAiView extends ItemView {
         generationState: "complete",
         usage: response.usage,
         noteHash: retry.snapshot.hash,
+        providerId: context.model.providerId,
+        modelId: context.model.modelId,
       }));
       await this.persistConversation(retry.snapshot);
     } catch (error) {
@@ -1306,10 +1417,12 @@ export class CurrentNoteAiView extends ItemView {
 
   private describeError(error: unknown): string {
     if (error instanceof ProviderRequestError) {
-      if (error.status === 401) return "DeepSeek rejected the API key. Choose a valid secret in plugin settings.";
-      if (error.status === 402) return "The DeepSeek account has insufficient balance.";
-      if (error.status === 429) return "DeepSeek rate-limited this request. Retry manually later.";
-      if (error.status && error.status >= 500) return "DeepSeek is temporarily unavailable. No automatic retry was made.";
+      const provider = error.providerId === "deepseek" ? "DeepSeek" : "Kimi";
+      if (error.status === 401) return `${provider} rejected the API key. Choose a valid ${provider} secret in plugin settings.`;
+      if (error.status === 402) return `The ${provider} account has insufficient balance.`;
+      if (error.status === 404) return `${provider} does not provide the selected model to this account.`;
+      if (error.status === 429) return `${provider} rate-limited this request. Retry manually later.`;
+      if (error.status && error.status >= 500) return `${provider} is temporarily unavailable. No automatic retry was made.`;
       return error.message;
     }
     if (error instanceof EditProposalError || error instanceof CurrentDocumentError) {

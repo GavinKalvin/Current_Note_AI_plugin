@@ -2,6 +2,20 @@
 
 All notable changes to Current Note AI are documented here.
 
+## 0.1.6 - 2026-08-16
+
+### Added
+
+- Show DeepSeek and Kimi models together in the same model dropdown; no separate provider selector is added.
+- Add independent API key and `/models` connection testing for DeepSeek and Kimi. The first Kimi release supports only `kimi-k2.6`, after it is verified by `/models`.
+- Add provider-level privacy consent, cross-provider history disclosure, and provider/model attribution on conversation messages.
+- Refresh provider catalogs independently; a failed refresh keeps the last successful catalog.
+
+### Changed
+
+- Migrate legacy v0.1.5 DeepSeek settings without loss and retain rollback-compatible DeepSeek shadow fields.
+- Temperature applies to DeepSeek only. Kimi requests are non-streaming with thinking disabled and a 120-second local timeout.
+
 ## 0.1.5 - 2026-08-15
 
 ### Added

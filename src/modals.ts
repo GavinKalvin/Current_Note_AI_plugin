@@ -4,7 +4,12 @@ export class FullNoteConsentModal extends Modal {
   private settle: ((accepted: boolean) => void) | null = null;
   private resolved = false;
 
-  constructor(app: App) {
+  constructor(
+    app: App,
+    private readonly providerName: string,
+    private readonly providerHost: string,
+    private readonly includesCrossProviderHistory: boolean,
+  ) {
     super(app);
   }
 
@@ -21,12 +26,17 @@ export class FullNoteConsentModal extends Modal {
     contentEl.addClass("current-note-ai-consent");
     contentEl.createEl("h3", { text: "Send the full current note?" });
     contentEl.createEl("p", {
-      text: "Current Note AI will send the complete Markdown source of the bound note and this in-memory conversation to DeepSeek.",
+      text: `Current Note AI will send the complete Markdown source of the bound note and this in-memory conversation to ${this.providerName} (${this.providerHost}).`,
     });
     const list = contentEl.createEl("ul");
     list.createEl("li", { text: "Includes unsaved text and frontmatter." });
     list.createEl("li", { text: "Does not expand embeds, links, attachments, or other notes." });
     list.createEl("li", { text: "Opening the sidebar alone never sends data." });
+    if (this.includesCrossProviderHistory) {
+      list.createEl("li", {
+        text: `The conversation includes replies created by another AI provider; their visible text will also be sent to ${this.providerName}.`,
+      });
+    }
 
     const actions = contentEl.createDiv({ cls: "current-note-ai-modal-actions" });
     const cancel = actions.createEl("button", { text: "Cancel" });
