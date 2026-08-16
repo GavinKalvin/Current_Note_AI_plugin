@@ -1,48 +1,28 @@
-# Current Note AI v0.1.6
+# Current Note AI v0.1.7
 
-> 本版本完成 Kimi 适配：支持独立 Kimi 账户档案、与 DeepSeek 并列选模，以及中国区/国际区 API 路由。
+> 本版本集中优化对话窗口的视觉层级、窄侧栏适配和输入快捷键，并彻底移除模型下拉框中的占位项。
 
-Current Note AI v0.1.6 adapts the plugin to Kimi alongside DeepSeek while preserving safe migration and rollback compatibility.
+## 主要变化
 
-## Highlights
+- **彻底移除模型占位项**：`Choose a profile and model` 不再作为禁用选项存在于下拉框 DOM 中。存在可用模型时直接显示真实模型；没有可用模型时控件保持空状态。
+- **修复窄侧栏溢出**：顶部区域、当前笔记卡片、输入区操作按钮和提案操作都支持安全换行；`Use current note` 在对话框缩小时不会跑出边界。
+- **统一输入规则**：Enter 插入换行，Shift+Enter 发送；数字小键盘和旧版 Electron 的 Enter 事件遵循同一规则，中文输入法组词确认不会误发。
+- **整体视觉优化**：重新整理标题、模型选择、上下文卡片、消息气泡、历史记录、提醒、编辑提案和输入框的间距、边框、层级及交互反馈。
+- **主题与无障碍**：继续使用 Obsidian 主题变量，兼容明暗主题，补充键盘焦点样式和减少动态效果偏好。
 
-- DeepSeek and Kimi appear together in one model dropdown; there is no separate provider selector.
-- Settings support multiple independent DeepSeek and Kimi account profiles, each with its own SecretStorage reference, model catalog, connection test, enabled state, and consent.
-- The first Kimi release supports `kimi-k2.6` after `/models` verification.
-- Kimi profiles explicitly select the China (`https://api.moonshot.cn/v1`) or International (`https://api.moonshot.ai/v1`) API region. Existing unlabelled profiles migrate to China, fixing China-region keys that previously returned `Invalid Authentication` against the international endpoint.
-- API keys are never silently retried against another region. Changing region invalidates the old catalog, selection, profile revision, and consent.
-- Profile-scoped privacy consent covers cross-provider history disclosure, and each conversation message retains its profile/provider/model source.
-- Provider catalog refreshes do not block one another; failed refreshes keep the last successful catalog.
-- Legacy v0.1.5 settings migrate without loss and retain rollback-compatible shadow fields plus a one-time pre-upgrade settings snapshot.
-- Temperature applies only to DeepSeek. Kimi is non-streaming, disables thinking, and uses a 120-second local timeout.
+## 安装
 
-## DeepSeek behavior
+1. 下载 `current-note-ai-0.1.7.zip`。
+2. 解压到 `<vault>/.obsidian/plugins/current-note-ai/`。
+3. 确认目录中包含 `main.js`、`manifest.json` 和 `styles.css`。
+4. 在 Obsidian 的第三方插件设置中启用或重新加载 **Current Note AI**。
 
-- DeepSeek discussion and edit requests now explicitly use non-thinking mode instead of inheriting the provider default.
-- The system prompt prioritizes the conclusion, reserves room to finish cleanly, and requires disclosure of material that did not fit.
-- Incomplete discussion replies retain their raw content, show a separate status, and offer a manual **Continue** action bound to the same note snapshot.
-- Continue is a new paid request and is capped at two attempts; automatic continuation remains disabled.
-- Edit JSON uses schema v2 with `complete` and `needs_segmentation` states.
-- Truncated and `needs_segmentation` edit responses never become proposals. One explicit higher-budget full regeneration may be offered against the same note hash.
-- Token usage now includes reasoning-token details when DeepSeek returns them; raw reasoning content is not stored or displayed.
-- Legacy truncation warnings are migrated out of saved assistant message content when History loads.
-- History writes are revision-serialized with an explicit **Retry save** action; Apply/Revert success and history-save failure are reported separately.
-- Editor changes update only stale/revert state, while rendered Markdown HTML is cached to preserve scroll position.
-- Requests use a conservative provider/model-aware context estimate and block over-budget payloads before network access; both adapters enforce a 120-second local timeout.
-- History is bounded to 5 MiB per session and 20 MiB total, supports deleting one/all sessions, and follows note renames.
+最低 Obsidian 版本：1.13.0。仅支持桌面端。
 
-## Install
+## 验证
 
-1. Download `current-note-ai-0.1.6.zip`.
-2. Extract it into `<vault>/.obsidian/plugins/current-note-ai/`.
-3. Confirm that the directory contains `main.js`, `manifest.json`, and `styles.css`.
-4. Enable or reload **Current Note AI** in Obsidian's third-party plugin settings.
-
-Minimum Obsidian version: 1.13.0. Desktop only.
-
-## Validation
-
-- TypeScript type check and 97 repository tests cover Kimi region migration and isolation, provider profiles, prompt boundaries, completion usage, continuation overlap, history migration, edit schema safety, keyboard shortcuts, persistence hardening, and Markdown rendering.
-- Production bundle should be rebuilt and installed before release.
-
-See `README.md`, `CHANGELOG.md`, and `docs/ARCHITECTURE.md` for details.
+- TypeScript 类型检查通过。
+- 13 个测试文件中的 99 项测试全部通过。
+- 生产构建和 Release 资产校验通过。
+- 已在真实 Obsidian 中检查正常宽度与约 190 px 窄侧栏，确认控件无横向溢出。
+- 已在真实输入框中确认 Enter 换行且不会发送；Shift+Enter 的发送行为由快捷键单元测试覆盖。

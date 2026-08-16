@@ -271,11 +271,6 @@ export class CurrentNoteAiView extends ItemView {
     const optionModels = new Map<string, ProfileModelRef>();
     let selectedOption = "";
     let optionSequence = 0;
-    const placeholder = modelSelect.createEl("option", {
-      text: "Choose a profile and model",
-      value: "",
-    });
-    placeholder.disabled = true;
     for (const profile of this.plugin.settings.providerProfiles) {
       if (!profile.enabled) continue;
       const group = modelSelect.createEl("optgroup", {
@@ -479,9 +474,12 @@ export class CurrentNoteAiView extends ItemView {
     this.observedCurrentFile = current?.file ?? null;
 
     if (!this.bound) {
-      row.createDiv({ text: "No Markdown note is bound." });
+      row.createDiv({
+        cls: "current-note-ai-context-details",
+        text: "No Markdown note is bound.",
+      });
     } else {
-      const details = row.createDiv();
+      const details = row.createDiv({ cls: "current-note-ai-context-details" });
       details.createDiv({
         cls: "current-note-ai-context-label",
         text: "FULL MARKDOWN CONTEXT",
@@ -500,7 +498,7 @@ export class CurrentNoteAiView extends ItemView {
     if (differs) {
       const button = row.createEl("button", {
         text: current ? "Use current note" : "Open a Markdown note",
-        cls: "mod-cta",
+        cls: "mod-cta current-note-ai-context-action",
       });
       button.disabled = !current || this.busy || this.modelLoading;
       button.addEventListener("click", () => this.bindToCurrent());
@@ -712,7 +710,7 @@ export class CurrentNoteAiView extends ItemView {
     const actions = composer.createDiv({ cls: "current-note-ai-composer-actions" });
     actions.createDiv({
       cls: "current-note-ai-composer-hint",
-      text: "↵ send · ⇧↵ newline",
+      text: "↵ newline · ⇧↵ send",
     });
     const buttons = actions.createDiv({ cls: "current-note-ai-composer-buttons" });
     const propose = buttons.createEl("button", { text: "Propose changes" });

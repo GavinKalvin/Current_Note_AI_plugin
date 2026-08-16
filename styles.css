@@ -1,6 +1,14 @@
+/* Current Note AI — conversation view styles.
+   Built on Obsidian theme variables so light/dark themes both work. */
+
 .current-note-ai-view {
   --cnai-accent: var(--interactive-accent);
   --cnai-assistant: var(--background-secondary);
+  --cnai-tint-accent: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  --cnai-tint-success: color-mix(in srgb, var(--color-green) 13%, transparent);
+  --cnai-tint-warning: color-mix(in srgb, var(--color-orange) 12%, transparent);
+  --cnai-tint-error: color-mix(in srgb, var(--text-error) 8%, transparent);
+  --cnai-border-subtle: color-mix(in srgb, var(--background-modifier-border) 65%, transparent);
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -9,19 +17,44 @@
   background: var(--background-primary);
 }
 
+/* Shared interactive states, scoped to this view only. */
+.current-note-ai-view button,
+.current-note-ai-view select,
+.current-note-ai-view textarea,
+.current-note-ai-view summary {
+  transition: background-color 140ms ease, color 140ms ease,
+    border-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease;
+}
+
+.current-note-ai-view button:focus-visible,
+.current-note-ai-view select:focus-visible,
+.current-note-ai-view textarea:focus-visible,
+.current-note-ai-view summary:focus-visible {
+  outline: 2px solid var(--background-modifier-border-focus, var(--interactive-accent));
+  outline-offset: 1px;
+}
+
+.current-note-ai-view button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
 .current-note-ai-header,
 .current-note-ai-context,
 .current-note-ai-composer {
   flex: 0 0 auto;
 }
 
+/* ---------- Header ---------- */
+
 .current-note-ai-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 12px 14px 10px;
-  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 12px 14px 11px;
+  border-bottom: 1px solid var(--cnai-border-subtle);
 }
 
 .current-note-ai-brand {
@@ -31,7 +64,12 @@
 .current-note-ai-title-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.current-note-ai-title-row strong {
+  letter-spacing: 0.01em;
 }
 
 .current-note-ai-history-button {
@@ -39,9 +77,11 @@
   align-items: center;
   gap: 5px;
   height: 24px;
-  padding: 2px 7px;
+  padding: 2px 8px;
+  border-radius: var(--radius-s);
   color: var(--text-muted);
   background: transparent;
+  box-shadow: none;
   font-size: var(--font-ui-smaller);
 }
 
@@ -56,7 +96,7 @@
   padding: 1px 5px;
   border-radius: 999px;
   color: var(--text-accent);
-  background: color-mix(in srgb, var(--interactive-accent) 13%, transparent);
+  background: var(--cnai-tint-accent);
   line-height: 1.3;
   text-align: center;
 }
@@ -66,17 +106,18 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  margin-top: 5px;
+  margin-top: 6px;
 }
 
 .current-note-ai-provider {
   flex: 0 0 auto;
-  padding: 2px 7px;
+  padding: 2px 8px;
   border-radius: 999px;
   color: var(--text-accent);
-  background: color-mix(in srgb, var(--interactive-accent) 13%, transparent);
+  background: var(--cnai-tint-accent);
   font-size: var(--font-ui-smaller);
   font-weight: var(--font-semibold);
+  letter-spacing: 0.02em;
 }
 
 .current-note-ai-model-select {
@@ -93,34 +134,41 @@
   width: 26px;
   height: 26px;
   padding: 0;
-  font-size: 16px;
+  border-radius: var(--radius-s);
+  color: var(--text-muted);
+  font-size: 15px;
 }
 
-.current-note-ai-model-refresh:disabled {
-  opacity: 0.55;
+.current-note-ai-model-refresh:hover:not(:disabled) {
+  color: var(--text-normal);
 }
 
 .current-note-ai-version {
+  padding: 1px 6px;
+  border: 1px solid var(--cnai-border-subtle);
+  border-radius: 999px;
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
   font-weight: var(--font-normal);
 }
 
+/* ---------- History panel ---------- */
+
 .current-note-ai-history-panel {
   flex: 0 0 auto;
   max-height: min(320px, 42vh);
-  margin: 8px 12px 0;
+  margin: 10px 12px 0;
   padding: 6px;
   overflow-y: auto;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
+  border: 1px solid var(--cnai-border-subtle);
+  border-radius: var(--radius-l);
   background: var(--background-secondary);
   box-shadow: var(--shadow-s);
 }
 
 .current-note-ai-history-list {
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
 
 .current-note-ai-history-actions {
@@ -131,7 +179,7 @@
 
 .current-note-ai-history-actions button,
 .current-note-ai-history-delete {
-  padding: 3px 7px;
+  padding: 3px 8px;
   font-size: var(--font-ui-smaller);
 }
 
@@ -139,16 +187,18 @@
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 3px;
+  gap: 2px;
 }
 
 .current-note-ai-history-item {
   display: block;
   width: 100%;
-  padding: 8px 9px;
+  padding: 7px 9px;
   border: 0;
+  border-radius: var(--radius-s);
   color: var(--text-normal);
   background: transparent;
+  box-shadow: none;
   text-align: left;
 }
 
@@ -157,14 +207,22 @@
 }
 
 .current-note-ai-history-item.is-active {
-  background: color-mix(in srgb, var(--interactive-accent) 12%, transparent);
+  background: var(--cnai-tint-accent);
 }
 
 .current-note-ai-history-delete {
   align-self: stretch;
   border-color: transparent;
-  color: var(--text-muted);
+  border-radius: var(--radius-s);
+  color: var(--text-faint);
   background: transparent;
+  box-shadow: none;
+  opacity: 0.62;
+}
+
+.current-note-ai-history-row:hover .current-note-ai-history-delete,
+.current-note-ai-history-delete:focus-visible {
+  opacity: 1;
 }
 
 .current-note-ai-history-delete:hover {
@@ -194,8 +252,8 @@
 }
 
 .current-note-ai-history-empty {
-  padding: 10px;
-  line-height: 1.45;
+  padding: 12px 10px;
+  line-height: 1.5;
   text-align: center;
 }
 
@@ -213,7 +271,15 @@
 .current-note-ai-modal-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  min-width: 0;
   gap: 8px;
+}
+
+.current-note-ai-view button {
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
 }
 
 .current-note-ai-header-actions button,
@@ -222,26 +288,46 @@
   font-size: var(--font-ui-smaller);
 }
 
+/* ---------- Context card ---------- */
+
 .current-note-ai-context {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   margin: 10px 12px 0;
-  padding: 9px 10px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-m);
+  padding: 10px 12px;
+  border: 1px solid var(--cnai-border-subtle);
+  border-radius: var(--radius-l);
   background: var(--background-secondary-alt);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--background-primary) 60%, transparent);
+}
+
+.current-note-ai-context-details {
+  flex: 1 1 140px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.current-note-ai-context-action {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  white-space: normal;
 }
 
 .current-note-ai-context-label {
-  letter-spacing: 0.04em;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .current-note-ai-context-file {
   overflow: hidden;
-  max-width: 220px;
-  margin-top: 2px;
+  max-width: 100%;
+  margin-top: 3px;
   font-weight: var(--font-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -249,50 +335,63 @@
 
 .current-note-ai-context-ready,
 .current-note-ai-status {
-  padding: 2px 7px;
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in srgb, var(--color-green) 30%, transparent);
   border-radius: 999px;
   color: var(--text-success);
-  background: color-mix(in srgb, var(--color-green) 14%, transparent);
+  background: var(--cnai-tint-success);
   font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
 }
 
 .current-note-ai-status.is-stale {
+  border-color: color-mix(in srgb, var(--color-orange) 35%, transparent);
   color: var(--text-warning);
-  background: color-mix(in srgb, var(--color-orange) 14%, transparent);
+  background: var(--cnai-tint-warning);
 }
 
-.current-note-ai-error {
-  flex: 0 0 auto;
-  margin: 10px 12px 0;
-  padding: 9px 10px;
-  border: 1px solid color-mix(in srgb, var(--text-error) 45%, transparent);
-  border-radius: var(--radius-m);
-  color: var(--text-error);
-  background: color-mix(in srgb, var(--text-error) 8%, transparent);
-  font-size: var(--font-ui-small);
-}
+/* ---------- Inline alerts ---------- */
 
+.current-note-ai-error,
 .current-note-ai-warning {
   flex: 0 0 auto;
   margin: 10px 12px 0;
-  padding: 9px 10px;
-  border: 1px solid color-mix(in srgb, var(--text-warning) 45%, transparent);
+  padding: 9px 12px;
+  border: 1px solid var(--cnai-border-subtle);
+  border-inline-start: 3px solid var(--text-error);
   border-radius: var(--radius-m);
-  color: var(--text-warning);
-  background: color-mix(in srgb, var(--color-orange) 8%, transparent);
   font-size: var(--font-ui-small);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
+
+.current-note-ai-error {
+  color: var(--text-error);
+  background: var(--cnai-tint-error);
+}
+
+.current-note-ai-warning {
+  border-inline-start-color: var(--text-warning);
+  color: var(--text-warning);
+  background: var(--cnai-tint-warning);
+}
+
+/* ---------- Timeline ---------- */
 
 .current-note-ai-timeline {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   min-height: 0;
   padding: 14px 12px 18px;
   overflow-y: auto;
   scroll-behavior: smooth;
+  scrollbar-width: thin;
 }
+
+/* ---------- Empty state ---------- */
 
 .current-note-ai-empty {
   align-self: center;
@@ -303,16 +402,31 @@
 }
 
 .current-note-ai-empty-icon {
-  margin-bottom: 8px;
+  display: grid;
+  width: 46px;
+  height: 46px;
+  margin: 0 auto 12px;
+  place-items: center;
+  border: 1px solid var(--cnai-border-subtle);
+  border-radius: 50%;
   color: var(--text-accent);
-  font-size: 30px;
+  background: var(--cnai-tint-accent);
+  font-size: 20px;
+}
+
+.current-note-ai-empty strong {
+  color: var(--text-normal);
+  font-size: var(--font-ui-medium);
+  letter-spacing: 0.01em;
 }
 
 .current-note-ai-empty p {
   margin: 6px 0 0;
   font-size: var(--font-ui-small);
-  line-height: 1.5;
+  line-height: 1.55;
 }
+
+/* ---------- Messages ---------- */
 
 .current-note-ai-message-row {
   display: flex;
@@ -340,24 +454,26 @@
 
 .current-note-ai-bubble {
   max-width: 100%;
-  padding: 9px 12px;
-  border-radius: 18px;
+  padding: 9px 13px;
+  border-radius: var(--radius-l);
   background: var(--cnai-assistant);
   color: var(--text-normal);
   font-size: var(--font-ui-small);
-  line-height: 1.5;
+  line-height: 1.55;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 
 .current-note-ai-message-row.is-user .current-note-ai-bubble {
-  border-bottom-right-radius: 6px;
+  border-bottom-right-radius: var(--radius-s);
   background: var(--cnai-accent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--interactive-accent) 30%, transparent);
   color: var(--text-on-accent);
 }
 
 .current-note-ai-message-row.is-assistant .current-note-ai-bubble {
-  border-bottom-left-radius: 6px;
+  border: 1px solid var(--cnai-border-subtle);
+  border-bottom-left-radius: var(--radius-s);
 }
 
 .current-note-ai-message-metadata {
@@ -377,9 +493,12 @@
 .current-note-ai-continue-button {
   height: 25px;
   padding: 2px 8px;
+  border-radius: var(--radius-s);
   color: var(--text-accent);
   font-size: var(--font-ui-smaller);
 }
+
+/* ---------- Assistant markdown ---------- */
 
 .current-note-ai-markdown {
   white-space: normal;
@@ -442,6 +561,7 @@
   max-width: 100%;
   padding: 9px 10px;
   overflow-x: auto;
+  border: 1px solid var(--cnai-border-subtle);
   border-radius: var(--radius-s);
   background: var(--code-background);
   white-space: pre;
@@ -476,6 +596,8 @@
   font-style: italic;
 }
 
+/* ---------- Typing indicator ---------- */
+
 .current-note-ai-bubble.is-typing {
   display: flex;
   gap: 4px;
@@ -503,18 +625,20 @@
   35% { opacity: 1; transform: translateY(-2px); }
 }
 
-.current-note-ai-proposal {
-  padding: 12px;
-  border: 1px solid var(--background-modifier-border);
+/* ---------- Edit proposal & recovery cards ---------- */
+
+.current-note-ai-proposal,
+.current-note-ai-recovery {
+  padding: 12px 14px;
+  border: 1px solid var(--cnai-border-subtle);
   border-radius: var(--radius-l);
   background: var(--background-secondary);
+  box-shadow: var(--shadow-s);
 }
 
 .current-note-ai-recovery {
-  padding: 11px 12px;
-  border: 1px solid color-mix(in srgb, var(--text-warning) 45%, transparent);
-  border-radius: var(--radius-l);
-  background: color-mix(in srgb, var(--color-orange) 8%, var(--background-secondary));
+  border-inline-start: 3px solid var(--text-warning);
+  background: color-mix(in srgb, var(--color-orange) 7%, var(--background-secondary));
 }
 
 .current-note-ai-recovery > p {
@@ -533,6 +657,7 @@
 
 .current-note-ai-recovery-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
 }
@@ -544,10 +669,15 @@
   gap: 12px;
 }
 
+.current-note-ai-proposal-stats {
+  margin-top: 3px;
+}
+
 .current-note-ai-proposal > p {
   margin: 9px 0;
   color: var(--text-muted);
   font-size: var(--font-ui-small);
+  line-height: 1.5;
 }
 
 .current-note-ai-selection-actions {
@@ -557,9 +687,10 @@
 
 .current-note-ai-operation {
   margin-top: 8px;
-  border: 1px solid var(--background-modifier-border);
+  border: 1px solid var(--cnai-border-subtle);
   border-radius: var(--radius-m);
   background: var(--background-primary);
+  overflow: hidden;
 }
 
 .current-note-ai-operation summary {
@@ -571,6 +702,10 @@
   font-size: var(--font-ui-small);
 }
 
+.current-note-ai-operation summary:hover {
+  background: var(--background-modifier-hover);
+}
+
 .current-note-ai-diff {
   display: grid;
   gap: 7px;
@@ -579,34 +714,46 @@
 
 .current-note-ai-diff-block {
   min-width: 0;
+  border: 1px solid var(--cnai-border-subtle);
+  border-inline-start-width: 3px;
   border-radius: var(--radius-s);
   overflow: hidden;
 }
 
 .current-note-ai-diff-block.is-removed {
-  background: color-mix(in srgb, var(--color-red) 10%, var(--background-primary));
+  border-inline-start-color: var(--color-red);
+  background: color-mix(in srgb, var(--color-red) 8%, var(--background-primary));
 }
 
 .current-note-ai-diff-block.is-added {
-  background: color-mix(in srgb, var(--color-green) 10%, var(--background-primary));
+  border-inline-start-color: var(--color-green);
+  background: color-mix(in srgb, var(--color-green) 8%, var(--background-primary));
 }
 
 .current-note-ai-diff-label {
   padding: 4px 7px;
-  color: var(--text-muted);
   font-size: 10px;
   font-weight: var(--font-semibold);
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
+}
+
+.current-note-ai-diff-block.is-removed .current-note-ai-diff-label {
+  color: var(--text-error);
+}
+
+.current-note-ai-diff-block.is-added .current-note-ai-diff-label {
+  color: var(--text-success);
 }
 
 .current-note-ai-diff pre {
   max-height: 260px;
   margin: 0;
-  padding: 7px;
+  padding: 7px 9px;
   overflow: auto;
   color: var(--text-normal);
   background: transparent;
   font-size: var(--font-smaller);
+  line-height: 1.45;
   white-space: pre-wrap;
 }
 
@@ -615,9 +762,11 @@
   margin-top: 10px;
 }
 
+/* ---------- Composer ---------- */
+
 .current-note-ai-composer {
   padding: 10px 12px 12px;
-  border-top: 1px solid var(--background-modifier-border);
+  border-top: 1px solid var(--cnai-border-subtle);
   background: var(--background-primary);
 }
 
@@ -625,18 +774,58 @@
   width: 100%;
   min-height: 70px;
   max-height: 220px;
-  resize: vertical;
-  border-radius: 16px;
   padding: 10px 12px;
+  resize: vertical;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
   background: var(--background-secondary);
+  line-height: 1.5;
+}
+
+.current-note-ai-composer textarea:hover:not(:disabled) {
+  border-color: var(--background-modifier-border-hover);
+}
+
+.current-note-ai-composer textarea:focus {
+  border-color: var(--background-modifier-border-focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 18%, transparent);
 }
 
 .current-note-ai-composer-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
+}
+
+.current-note-ai-composer-hint {
+  flex: 1 1 120px;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}
+
+.current-note-ai-composer-buttons button {
+  flex: 1 1 auto;
+  border-radius: var(--radius-s);
+}
+
+/* ---------- Settings / modals ---------- */
+
+.current-note-ai-consent p {
+  line-height: 1.55;
+}
+
+.current-note-ai-consent ul {
+  padding-inline-start: 1.3em;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.current-note-ai-consent li + li {
+  margin-top: 3px;
 }
 
 .current-note-ai-modal-actions {
@@ -663,6 +852,8 @@
   border-bottom: 0;
 }
 
+/* ---------- Narrow widths ---------- */
+
 @media (max-width: 430px) {
   .current-note-ai-header,
   .current-note-ai-context,
@@ -683,5 +874,21 @@
   .current-note-ai-model-select {
     flex: 1 1 auto;
     max-width: none;
+  }
+}
+
+/* ---------- Reduced motion ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .current-note-ai-view *,
+  .current-note-ai-view *::before,
+  .current-note-ai-view *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .current-note-ai-timeline {
+    scroll-behavior: auto;
   }
 }

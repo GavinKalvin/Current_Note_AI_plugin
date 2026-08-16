@@ -7,7 +7,7 @@ export interface ComposerKeyEvent {
 }
 
 export function shouldSubmitComposer(event: ComposerKeyEvent): boolean {
-  if (event.isComposing || event.keyCode === 229 || event.shiftKey) return false;
+  if (event.isComposing || event.keyCode === 229 || !event.shiftKey) return false;
   return event.key === "Enter"
     || event.code === "Enter"
     || event.code === "NumpadEnter"

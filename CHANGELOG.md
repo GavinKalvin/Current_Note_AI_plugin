@@ -6,6 +6,19 @@ All notable changes to Current Note AI are documented here.
 
 No unreleased changes.
 
+## 0.1.7 - 2026-08-16
+
+### Changed
+
+- Redesign the conversation view with a clearer visual hierarchy, refined message bubbles, context and proposal cards, improved focus states, and reduced-motion support while retaining Obsidian theme compatibility.
+- Make the header, context row, composer actions, proposal controls, and buttons wrap safely in narrow sidebars so **Use current note** and other controls remain inside the panel.
+- Change the composer shortcut contract to Enter for a newline and Shift+Enter to send, including numpad and legacy Electron Enter handling while preserving IME composition safety.
+
+### Fixed
+
+- Remove the disabled **Choose a profile and model** option from the model selector instead of merely hiding or renaming its text.
+- Keep history deletion visible and accessible at compact widths and improve long-text wrapping throughout the conversation view.
+
 ## 0.1.6 - 2026-08-16
 
 ### Added

@@ -2,7 +2,7 @@
 
 Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 或 Kimi 分析、讨论并安全修改当前 Markdown 笔记。
 
-当前版本：**v0.1.6**。最低 Obsidian 版本为 **1.13.0**，仅支持桌面端。
+当前版本：**v0.1.7**。最低 Obsidian 版本为 **1.13.0**，仅支持桌面端。
 
 它的核心原则不是“让模型直接编辑文件”，而是把 AI 修改变成可审阅的本地事务：模型只返回结构化提案；插件在本地验证、展示差异，并且只在用户点击 **Apply selected** 后写入。
 
@@ -17,7 +17,7 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 或 Kimi 分�
 - Discussion、Edit、Continue 与 Edit retry 都绑定到明确的 profile/model；档案被删除、禁用或更改后会阻断旧请求，不会静默改用另一个账户。
 - DeepSeek 请求显式使用 non-thinking 模式，温度设置仅适用于 DeepSeek；Kimi 请求非流式、禁用 thinking，并设置 120 秒本地超时。
 - 回答达到输出上限时会单独标记为未完成，并提供最多两次、由用户触发的 **Continue**；警告状态不会写入模型正文。
-- 输入框支持 Enter、Command+Enter 或 Ctrl+Enter 发送，Shift+Enter 换行，并避免中文输入法组词确认时误发。
+- 输入框严格使用 Enter 换行、Shift+Enter 发送，并避免中文输入法组词确认时误发。
 - 侧栏顶部可直接选择 DeepSeek 或 Kimi 模型，并可在不发送笔记内容的前提下刷新对应供应商的 `/models` 列表。
 - 侧栏顶部的 **History** 按钮按最近更新时间列出会话；首条用户消息会在本地自动生成会话标题。
 - 只读取主编辑区当前绑定的 Markdown 源码，包括未保存内容和 frontmatter。
