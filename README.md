@@ -11,9 +11,9 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 或 Kimi 分�
 - Ribbon 按钮和命令面板打开右侧聊天栏。
 - iMessage 风格的用户/AI 对话气泡。
 - AI 回复支持安全的 Markdown 排版，包括标题、列表、表格、引用、链接和代码块；原始 HTML 与自动嵌入被禁用。
-- DeepSeek 与 Kimi 的模型在同一个模型下拉框中并列显示，不增加单独的供应商选择按钮；Kimi 首版只支持经 `/models` 验证的 `kimi-k2.6`。
-- DeepSeek 与 Kimi 各自配置 API key 和 **Test connection**；供应商目录刷新互不阻断，失败时保留上次成功目录。
-- 供应商级隐私同意覆盖跨供应商历史披露，会话消息保留 provider/model 来源。
+- 设置页可创建任意多条 DeepSeek/Kimi 账户档案；每条档案有独立的 SecretStorage 引用、模型目录、启用状态与隐私同意。
+- 所有已启用档案的模型仍在同一个分组下拉框中显示，不增加单独的供应商按钮；Kimi 只接受经该账户 `/models` 验证的 `kimi-k2.6`。
+- Discussion、Edit、Continue 与 Edit retry 都绑定到明确的 profile/model；档案被删除、禁用或更改后会阻断旧请求，不会静默改用另一个账户。
 - DeepSeek 请求显式使用 non-thinking 模式，温度设置仅适用于 DeepSeek；Kimi 请求非流式、禁用 thinking，并设置 120 秒本地超时。
 - 回答达到输出上限时会单独标记为未完成，并提供最多两次、由用户触发的 **Continue**；警告状态不会写入模型正文。
 - 输入框支持 Enter、Command+Enter 或 Ctrl+Enter 发送，Shift+Enter 换行，并避免中文输入法组词确认时误发。
@@ -51,14 +51,14 @@ Current Note AI 是一个桌面端 Obsidian 插件，用 DeepSeek 或 Kimi 分�
 ## 配置 DeepSeek 与 Kimi
 
 1. 打开 **Settings → Current Note AI**。
-2. 在对应供应商的 **API key** 中通过 Obsidian SecretStorage 选择或创建 secret。
-3. 分别点击对应的 **Test connection**，确认 `/models` 能返回并缓存该供应商的可用模型；Kimi 首版只接受其中的 `kimi-k2.6`。
-4. 在同一个模型下拉框中选择 DeepSeek 或 Kimi 模型；刷新按钮只查询模型列表，不发送笔记内容。
-5. 默认模型为 `deepseek-v4-flash`，但模型名应以测试返回结果为准。
+2. 点击 **Add DeepSeek** 或 **Add Kimi** 创建账户档案；同一供应商可以添加多次并分别命名。
+3. 在每条档案的 **API key secret** 中选择或创建 SecretStorage secret，然后点击 **Test connection** 缓存该账户的模型。
+4. 在侧栏唯一的模型下拉框中按“档案 · 供应商”选择模型；刷新按钮只查询已启用档案的模型列表，不发送笔记内容。
+5. 档案可排序、禁用或删除。更换密钥会清除该档案的模型缓存、当前选择和隐私授权，必须重新测试与选择。
 
 普通 Discussion 与 Edit 请求都显式关闭 DeepSeek thinking；Kimi 请求固定非流式并禁用 thinking。温度设置仅作用于 DeepSeek。设置中的 **Maximum output tokens** 是单次请求预算；Discussion 的 Continue 会产生新的计费请求，Edit 的更高预算重试也会产生新的计费请求。
 
-普通 `data.json` 保存 secret 的名称引用、非敏感偏好和本地会话历史，不保存 API key 本身。会话历史包含用户消息和供应商回复，并保留每条消息的 provider/model 来源，因此应按笔记内容同等保护该文件。
+普通 `data.json` 保存 secret 的名称引用、非敏感档案信息和本地会话历史，不保存 API key 本身。升级前会一次性保留 `data.v0.1.6.rollback.json`；它同样只含旧设置与 secret 引用。会话消息保存冻结的 profile/provider/model 来源，因此应按笔记内容同等保护这些文件。
 
 ## 数据边界
 
@@ -94,6 +94,7 @@ flowchart LR
 
 - `src/context.ts`：绑定当前 Markdown leaf，并在读取和写入前核对 leaf、文件对象与路径。
 - `src/provider/deepseek.ts`、`src/provider/kimi.ts`：分别封装供应商 `/models` 与 `/chat/completions` 请求和错误映射。
+- `src/provider/registry.ts`、`src/core/provider-profiles.ts`：固定供应商端点、账户档案身份和冻结请求目标；设置数据不能注入任意 URL。
 - `src/core/prompt.ts`：构建讨论与编辑提示，明确把笔记视为不可信数据。
 - `src/core/edit-proposal.ts`：解析和验证编辑提案，拒绝重复、缺失、重叠或过大的修改。
 - `src/core/conversation-history.ts`：本地命名、清洗、排序并限制历史会话。

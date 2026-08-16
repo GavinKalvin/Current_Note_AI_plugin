@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "obsidian";
 import { hashText } from "../src/core/hash";
-import type { ModelRef, ProviderAdapter } from "../src/types";
+import type { FrozenRequestTarget, ModelRef, ProfileModelRef, ProviderAdapter, ProviderProfile } from "../src/types";
 import { CurrentNoteAiView } from "../src/view";
 
 function createView(options: {
@@ -38,9 +38,30 @@ function createView(options: {
     complete: vi.fn(async () => ({ content: "Kimi response", finishReason: "stop" })),
   } satisfies ProviderAdapter;
   const selectedModel = options.selectedModel ?? { providerId: "deepseek", modelId: "deepseek-v4-flash" };
+  const profiles: ProviderProfile[] = [
+    {
+      id: "legacy-deepseek", label: "DeepSeek", providerId: "deepseek", secretId: "deepseek-secret", enabled: true, revision: 1,
+      catalog: { models: [{ id: "deepseek-v4-flash", contextWindowTokens: 64_000 }], lastSuccessfulRefreshAt: 1 },
+    },
+    {
+      id: "legacy-kimi", label: "Kimi", providerId: "kimi", secretId: "kimi-secret", enabled: true, revision: 1,
+      catalog: { models: [{ id: "kimi-k2.6", contextWindowTokens: 256_000 }], lastSuccessfulRefreshAt: 1 },
+    },
+  ];
+  const selectedProfileModel: ProfileModelRef = {
+    profileId: selectedModel.providerId === "kimi" ? "legacy-kimi" : "legacy-deepseek",
+    modelId: selectedModel.modelId,
+  };
   const plugin = {
     settings: {
-      schemaVersion: 2,
+      schemaVersion: 3,
+      providerProfiles: profiles,
+      selectedProfileModel,
+      profileConsents: {
+        "legacy-deepseek": { disclosureRevision: 1, acceptedAt: 1, profileRevision: 1, providerId: "deepseek" },
+        "legacy-kimi": { disclosureRevision: 1, acceptedAt: 1, profileRevision: 1, providerId: "kimi" },
+      },
+      migrationVersion: 3,
       selectedModel,
       kimiSecretId: "kimi-secret",
       providerCatalogs: {
@@ -82,16 +103,31 @@ function createView(options: {
       if (options.persistFails ?? true) throw new Error("disk full");
     }),
     providers: { deepseek, kimi },
-    resolveRequestContext: vi.fn((model: ModelRef = selectedModel) => {
-      const adapter = model.providerId === "kimi" ? kimi : deepseek;
+    resolveRequestContext: vi.fn((model: ProfileModelRef | FrozenRequestTarget | ModelRef | null = selectedProfileModel) => {
+      const profileId = model && "profileId" in model
+        ? model.profileId
+        : model && "providerId" in model && model.providerId === "kimi" ? "legacy-kimi" : "legacy-deepseek";
+      const profile = profiles.find((candidate) => candidate.id === profileId) ?? profiles[0]!;
+      const modelId = model && "modelId" in model ? model.modelId : selectedModel.modelId;
+      const adapter = profile.providerId === "kimi" ? kimi : deepseek;
+      const target = {
+        profileId: profile.id,
+        profileRevision: profile.revision,
+        providerId: profile.providerId,
+        modelId,
+      } satisfies FrozenRequestTarget;
       return {
-        model,
+        profile,
+        profileModel: { profileId: profile.id, modelId },
+        target,
+        model: { providerId: profile.providerId, modelId },
         adapter,
         displayName: adapter.displayName,
-        contextWindowTokens: model.providerId === "kimi" ? 256_000 : 64_000,
+        destination: profile.providerId === "kimi" ? "https://api.moonshot.ai/v1" : "https://api.deepseek.com",
+        contextWindowTokens: profile.providerId === "kimi" ? 256_000 : 64_000,
       };
     }),
-    getApiKey: vi.fn((providerId: "deepseek" | "kimi") => `${providerId}-secret`),
+    getApiKey: vi.fn((profileId: string) => profileId === "legacy-kimi" ? "kimi-secret" : "deepseek-secret"),
     saveSettings: vi.fn(async () => undefined),
   };
   const view = new CurrentNoteAiView(leaf as never, plugin as never);
@@ -197,7 +233,7 @@ describe("CurrentNoteAiView lifecycle hardening", () => {
 
     expect(kimi.complete).toHaveBeenCalledOnce();
     expect(deepseek.complete).not.toHaveBeenCalled();
-    expect(plugin.getApiKey).toHaveBeenCalledWith("kimi");
+    expect(plugin.getApiKey).toHaveBeenCalledWith("legacy-kimi");
     expect(plugin.upsertConversation).toHaveBeenCalled();
   });
 
@@ -219,6 +255,12 @@ describe("CurrentNoteAiView lifecycle hardening", () => {
       continuationCount: 0,
       providerId: "deepseek" as const,
       modelId: "deepseek-v4-flash",
+      target: {
+        profileId: "legacy-deepseek",
+        profileRevision: 1,
+        providerId: "deepseek" as const,
+        modelId: "deepseek-v4-flash",
+      },
     };
     Object.assign(view as object, { messages: [incomplete] });
     deepseek.complete.mockResolvedValueOnce({
@@ -231,10 +273,7 @@ describe("CurrentNoteAiView lifecycle hardening", () => {
 
     expect(deepseek.complete).toHaveBeenCalledOnce();
     expect(kimi.complete).not.toHaveBeenCalled();
-    expect(plugin.resolveRequestContext).toHaveBeenCalledWith({
-      providerId: "deepseek",
-      modelId: "deepseek-v4-flash",
-    });
-    expect(plugin.getApiKey).toHaveBeenCalledWith("deepseek");
+    expect(plugin.resolveRequestContext).toHaveBeenCalledWith(incomplete.target);
+    expect(plugin.getApiKey).toHaveBeenCalledWith("legacy-deepseek");
   });
 });

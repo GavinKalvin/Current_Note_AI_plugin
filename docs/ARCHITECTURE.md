@@ -2,7 +2,7 @@
 
 ## Objective
 
-Current Note AI lets a user discuss or revise exactly one explicitly bound Markdown note through DeepSeek or Kimi. Both providers appear in the same model dropdown; there is no separate provider-selection button. The provider may propose text, but it cannot choose a file, execute a command, search the Vault, or write directly to the editor.
+Current Note AI lets a user discuss or revise exactly one explicitly bound Markdown note through any configured DeepSeek or Kimi account profile. Enabled profiles appear as groups in one model dropdown; there is no separate provider-selection button. The provider may propose text, but it cannot choose a file, execute a command, search the Vault, or write directly to the editor.
 
 ## Request path
 
@@ -33,10 +33,10 @@ Apply and Revert have two side effects: the editor transaction and persistence o
 
 ## Secrets and persistence
 
-- Each provider has its own API key and connection test. The API keys live in Obsidian SecretStorage; plugin `data.json` stores only the secret identifiers.
-- Provider-level privacy consent covers disclosure of note content and cross-provider conversation history. Conversation messages retain their provider/model source.
-- Provider model catalogs refresh independently; a failed refresh retains the last successful catalog.
-- Legacy v0.1.5 DeepSeek settings migrate without loss and retain rollback-compatible DeepSeek shadow fields.
+- Each stable-ID profile has its own API key reference, connection test, model catalog, revision, and destination-specific consent. API keys live in Obsidian SecretStorage; plugin `data.json` stores only secret identifiers.
+- Discussion and edit requests freeze `{profileId, profileRevision, providerId, modelId}`. Continue and edit retry reuse that target and fail closed if it changed; they never read the current selector as fallback.
+- Profiles use a code-owned DeepSeek/Kimi adapter registry with fixed HTTPS destinations. Arbitrary base URLs and user-defined headers are not accepted.
+- Legacy settings migrate to deterministic DeepSeek/Kimi profiles. Legacy shadow fields and a one-time `data.v0.1.6.rollback.json` snapshot preserve the pre-upgrade rollback boundary.
 - `data.json` also stores non-secret settings and up to 50 locally named conversations, with at most 200 persisted user/assistant messages per conversation.
 - Persisted history is bounded to 5 MiB per conversation and 20 MiB overall; individual conversations or all history can be deleted. Note rename updates the bound path and associated history.
 - All settings fields are sanitized on load. Request-size budgeting is a conservative heuristic, not an official tokenizer count.

@@ -8,14 +8,27 @@ import {
 } from "obsidian";
 import type {
   ModelRef,
+  ProfileConsentGrant,
+  ProfileModelRef,
   ProviderConsentGrant,
   ProviderId,
   ProviderModelCatalog,
+  ProviderProfile,
   SavedConversation,
 } from "./types";
+import {
+  LEGACY_DEEPSEEK_PROFILE_ID,
+  LEGACY_KIMI_PROFILE_ID,
+  PROVIDER_PRESETS,
+} from "./core/provider-profiles";
 
 export interface CurrentNoteAiSettings {
-  schemaVersion: 2;
+  schemaVersion: 3;
+  providerProfiles: ProviderProfile[];
+  selectedProfileModel: ProfileModelRef | null;
+  profileConsents: Record<string, ProfileConsentGrant>;
+  migrationVersion: 3;
+  // v0.1.6 shadow fields retained for rollback compatibility.
   selectedModel: ModelRef;
   kimiSecretId: string;
   providerCatalogs: Record<ProviderId, ProviderModelCatalog>;
@@ -33,7 +46,39 @@ export interface CurrentNoteAiSettings {
 }
 
 export const DEFAULT_SETTINGS: CurrentNoteAiSettings = {
-  schemaVersion: 2,
+  schemaVersion: 3,
+  providerProfiles: [
+    {
+      id: LEGACY_DEEPSEEK_PROFILE_ID,
+      label: "DeepSeek",
+      providerId: "deepseek",
+      secretId: "",
+      enabled: true,
+      revision: 1,
+      catalog: {
+        models: [
+          { id: "deepseek-v4-flash", contextWindowTokens: 64_000 },
+          { id: "deepseek-v4-pro", contextWindowTokens: 64_000 },
+        ],
+        lastSuccessfulRefreshAt: 0,
+      },
+    },
+    {
+      id: LEGACY_KIMI_PROFILE_ID,
+      label: "Kimi",
+      providerId: "kimi",
+      secretId: "",
+      enabled: true,
+      revision: 1,
+      catalog: { models: [], lastSuccessfulRefreshAt: 0 },
+    },
+  ],
+  selectedProfileModel: {
+    profileId: LEGACY_DEEPSEEK_PROFILE_ID,
+    modelId: "deepseek-v4-flash",
+  },
+  profileConsents: {},
+  migrationVersion: 3,
   selectedModel: { providerId: "deepseek", modelId: "deepseek-v4-flash" },
   kimiSecretId: "",
   providerCatalogs: {
@@ -64,8 +109,16 @@ export const DEFAULT_SETTINGS: CurrentNoteAiSettings = {
 export interface SettingsHost {
   settings: CurrentNoteAiSettings;
   saveSettings(): Promise<void>;
-  testConnection(providerId: ProviderId): Promise<string[]>;
-  selectModel(model: ModelRef): Promise<void>;
+  addProfile(providerId: ProviderId): Promise<string>;
+  updateProfile(
+    profileId: string,
+    changes: Partial<Pick<ProviderProfile, "label" | "secretId" | "enabled">>,
+  ): Promise<void>;
+  deleteProfile(profileId: string): Promise<void>;
+  moveProfile(profileId: string, direction: -1 | 1): Promise<void>;
+  resetProfileConsent(profileId: string): Promise<void>;
+  testConnection(profileId: string): Promise<string[]>;
+  selectModel(model: ProfileModelRef): Promise<void>;
 }
 
 export class CurrentNoteAiSettingTab extends PluginSettingTab {
@@ -89,85 +142,28 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl).setName("DeepSeek").setHeading();
-
     new Setting(containerEl)
-      .setName("API key")
-      .setDesc("Choose or create a vault-scoped secret. The key is not stored in plugin data.json.")
-      .addComponent((element) => new SecretComponent(this.app, element)
-        .setValue(this.host.settings.secretId)
-        .onChange(async (value) => {
-          this.host.settings.secretId = value;
-          await this.saveWithNotice();
-        }));
+      .setName("Provider profiles")
+      .setHeading();
+    containerEl.createEl("p", {
+      text: "Each profile keeps its own secret, model catalog, consent, and request history identity. API destinations are fixed by provider.",
+    });
+    const addActions = containerEl.createDiv({ cls: "current-note-ai-profile-add-actions" });
+    for (const providerId of ["deepseek", "kimi"] as const) {
+      const button = addActions.createEl("button", {
+        text: `Add ${PROVIDER_PRESETS[providerId].displayName}`,
+      });
+      button.addEventListener("click", () => {
+        void this.runProfileAction(async () => {
+          await this.host.addProfile(providerId);
+          this.display();
+        });
+      });
+    }
 
-    new Setting(containerEl)
-      .setName("Model")
-      .setDesc("Enter a DeepSeek model ID. Use Test connection to verify the key and refresh the available list.")
-      .addText((text) => text
-        .setPlaceholder("deepseek-v4-flash")
-        .setValue(this.host.settings.model)
-        .onChange(async (value) => {
-          const modelId = value.trim();
-          if (!modelId) return;
-          try {
-            await this.host.selectModel({ providerId: "deepseek", modelId });
-          } catch (error) {
-            new Notice(error instanceof Error
-              ? `DeepSeek model selection failed: ${error.message}`
-              : "DeepSeek model selection failed.");
-          }
-        }));
-
-    new Setting(containerEl)
-      .setName("Test connection")
-      .setDesc("Queries DeepSeek /models without sending note content.")
-      .addButton((button) => button
-        .setButtonText("Test")
-        .onClick(async () => {
-          button.setDisabled(true).setButtonText("Testing…");
-          try {
-            const models = await this.host.testConnection("deepseek");
-            new Notice(`DeepSeek connected. Available models: ${models.join(", ")}`);
-          } catch (error) {
-            new Notice(error instanceof Error
-              ? `DeepSeek connection failed: ${error.message}`
-              : "DeepSeek connection failed.");
-          } finally {
-            button.setDisabled(false).setButtonText("Test");
-          }
-        }));
-
-    new Setting(containerEl).setName("Kimi").setHeading();
-
-    new Setting(containerEl)
-      .setName("API key")
-      .setDesc("Choose or create a vault-scoped secret reference. The key is not stored in plugin data.json.")
-      .addComponent((element) => new SecretComponent(this.app, element)
-        .setValue(this.host.settings.kimiSecretId)
-        .onChange(async (value) => {
-          this.host.settings.kimiSecretId = value;
-          await this.saveWithNotice();
-        }));
-
-    new Setting(containerEl)
-      .setName("Test connection")
-      .setDesc("Queries Kimi /models without sending note content. This plugin currently supports Kimi K2.6.")
-      .addButton((button) => button
-        .setButtonText("Test")
-        .onClick(async () => {
-          button.setDisabled(true).setButtonText("Testing…");
-          try {
-            const models = await this.host.testConnection("kimi");
-            new Notice(`Kimi connected. Supported models: ${models.join(", ")}`);
-          } catch (error) {
-            new Notice(error instanceof Error
-              ? `Kimi connection failed: ${error.message}`
-              : "Kimi connection failed.");
-          } finally {
-            button.setDisabled(false).setButtonText("Test");
-          }
-        }));
+    for (const [index, profile] of this.host.settings.providerProfiles.entries()) {
+      this.renderProfileCard(containerEl, profile, index);
+    }
 
     const maxTokensSetting = new Setting(containerEl)
       .setName("Maximum output tokens")
@@ -223,25 +219,88 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
           await this.saveWithNotice();
         }));
 
-    new Setting(containerEl)
-      .setName("Full-note disclosure")
-      .setDesc("Show the consent dialog again before the next request.")
-      .addButton((button) => button
-        .setButtonText("Reset DeepSeek consent")
-        .onClick(async () => {
-          delete this.host.settings.providerConsents.deepseek;
-          this.host.settings.consentAcknowledged = false;
-          if (await this.saveWithNotice()) {
-            new Notice("DeepSeek consent will be requested again before sending note content.");
-          }
-        }))
-      .addButton((button) => button
-        .setButtonText("Reset Kimi consent")
-        .onClick(async () => {
-          delete this.host.settings.providerConsents.kimi;
-          if (await this.saveWithNotice()) {
-            new Notice("Kimi consent will be requested again before sending note content.");
-          }
+  }
+
+  private renderProfileCard(container: HTMLElement, profile: ProviderProfile, index: number): void {
+    const preset = PROVIDER_PRESETS[profile.providerId];
+    const card = container.createDiv({ cls: "current-note-ai-profile-card" });
+    new Setting(card).setName(`${profile.label} · ${preset.displayName}`).setHeading();
+    new Setting(card)
+      .setName("Destination")
+      .setDesc(`${preset.displayName} requests use ${preset.baseUrl}. This destination is fixed.`);
+    new Setting(card)
+      .setName("Profile label")
+      .addText((text) => text
+        .setValue(profile.label)
+        .onChange((value) => {
+          void this.runProfileAction(() => this.host.updateProfile(profile.id, { label: value }));
         }));
+    new Setting(card)
+      .setName("API key secret")
+      .setDesc("Choose a vault-scoped secret. The key is never stored in plugin data.")
+      .addComponent((element) => new SecretComponent(this.app, element)
+        .setValue(profile.secretId)
+        .onChange((value) => {
+          void this.runProfileAction(() => this.host.updateProfile(profile.id, { secretId: value }));
+        }));
+    new Setting(card)
+      .setName(profile.enabled ? "Enabled" : "Disabled")
+      .setDesc(profile.enabled ? "Available for new requests." : "Excluded from model selection and refreshes.")
+      .addToggle((toggle) => toggle
+        .setValue(profile.enabled)
+        .onChange((value) => {
+          void this.runProfileAction(() => this.host.updateProfile(profile.id, { enabled: value }));
+        }));
+    const actions = new Setting(card).setName("Profile actions");
+    actions.addButton((button) => button
+      .setButtonText("Test connection")
+      .onClick(async () => {
+        button.setDisabled(true).setButtonText("Testing…");
+        try {
+          const models = await this.host.testConnection(profile.id);
+          new Notice(`${profile.label} connected. Available models: ${models.join(", ")}`);
+        } catch (error) {
+          new Notice(error instanceof Error ? error.message : "Connection test failed.");
+        } finally {
+          button.setDisabled(false).setButtonText("Test connection");
+        }
+      }));
+    actions.addButton((button) => button
+      .setButtonText("Move up")
+      .setDisabled(index === 0)
+      .onClick(() => void this.runProfileAction(async () => {
+        await this.host.moveProfile(profile.id, -1);
+        this.display();
+      })));
+    actions.addButton((button) => button
+      .setButtonText("Move down")
+      .setDisabled(index === this.host.settings.providerProfiles.length - 1)
+      .onClick(() => void this.runProfileAction(async () => {
+        await this.host.moveProfile(profile.id, 1);
+        this.display();
+      })));
+    actions.addButton((button) => button
+      .setButtonText("Reset consent")
+      .onClick(() => void this.runProfileAction(async () => {
+        await this.host.resetProfileConsent(profile.id);
+        new Notice(`${profile.label} consent will be requested again before sending note content.`);
+      })));
+    actions.addButton((button) => button
+      .setButtonText("Delete")
+      .setWarning()
+      .onClick(() => {
+        void this.runProfileAction(async () => {
+          await this.host.deleteProfile(profile.id);
+          this.display();
+        });
+      }));
+  }
+
+  private async runProfileAction(action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "Could not update provider profile.");
+    }
   }
 }

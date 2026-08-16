@@ -1,4 +1,4 @@
-import { MarkdownView, Notice, Plugin, TFile } from "obsidian";
+import { MarkdownView, normalizePath, Notice, Plugin, TFile } from "obsidian";
 import { CurrentDocumentGate } from "./context";
 import {
   renameConversationHistoryNote,
@@ -6,9 +6,8 @@ import {
 } from "./core/conversation-history";
 import { RevisionedSaveCoordinator } from "./core/persistence";
 import { sanitizeSettings } from "./core/settings-sanitization";
-import { DeepSeekAdapter } from "./provider/deepseek";
-import { ProviderRequestError } from "./provider/errors";
-import { KimiAdapter } from "./provider/kimi";
+import { ProfileRoutingError, ProviderRequestError } from "./provider/errors";
+import { getProviderRegistration } from "./provider/registry";
 import {
   CurrentNoteAiSettingTab,
   DEFAULT_SETTINGS,
@@ -17,25 +16,44 @@ import {
 } from "./settings";
 import { CURRENT_NOTE_AI_VIEW, CurrentNoteAiView } from "./view";
 import type {
+  FrozenRequestTarget,
   ModelRef,
+  ProfileModelRef,
+  ProviderProfile,
   ProviderAdapter,
   ProviderId,
   ProviderModel,
   SavedConversation,
 } from "./types";
+import {
+  createProfileId,
+  findProfile,
+  freezeTarget,
+  LEGACY_DEEPSEEK_PROFILE_ID,
+  LEGACY_KIMI_PROFILE_ID,
+  MAX_PROVIDER_PROFILES,
+  nextProfileLabel,
+} from "./core/provider-profiles";
 
 const KIMI_SUPPORTED_MODEL = "kimi-k2.6";
 const KIMI_CONTEXT_WINDOW_TOKENS = 256_000;
 const DEEPSEEK_FALLBACK_CONTEXT_WINDOW_TOKENS = 64_000;
+const LEGACY_ROLLBACK_FILE = "data.v0.1.6.rollback.json";
 
 export interface ProviderRequestContext {
+  profile: ProviderProfile;
+  profileModel: ProfileModelRef;
+  target: FrozenRequestTarget;
+  /** Kept as a compatibility alias while request call sites migrate. */
   model: ModelRef;
   adapter: ProviderAdapter;
   displayName: string;
+  destination: string;
   contextWindowTokens: number;
 }
 
 export interface ProviderRefreshResult {
+  profileId: string;
   providerId: ProviderId;
   displayName: string;
   status: "updated" | "failed" | "skipped";
@@ -51,6 +69,17 @@ export interface ProviderRefreshSummary {
 function cloneSettings(settings: CurrentNoteAiSettings): CurrentNoteAiSettings {
   return {
     ...settings,
+    providerProfiles: settings.providerProfiles.map((profile) => ({
+      ...profile,
+      catalog: {
+        ...profile.catalog,
+        models: profile.catalog.models.map((model) => ({ ...model })),
+      },
+    })),
+    selectedProfileModel: settings.selectedProfileModel
+      ? { ...settings.selectedProfileModel }
+      : null,
+    profileConsents: Object.fromEntries(Object.entries(settings.profileConsents).map(([id, consent]) => [id, { ...consent }])),
     selectedModel: { ...settings.selectedModel },
     providerCatalogs: {
       deepseek: {
@@ -84,6 +113,17 @@ function cloneSettings(settings: CurrentNoteAiSettings): CurrentNoteAiSettings {
 export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost {
   settings: CurrentNoteAiSettings = {
     ...DEFAULT_SETTINGS,
+    providerProfiles: DEFAULT_SETTINGS.providerProfiles.map((profile) => ({
+      ...profile,
+      catalog: {
+        ...profile.catalog,
+        models: profile.catalog.models.map((model) => ({ ...model })),
+      },
+    })),
+    selectedProfileModel: DEFAULT_SETTINGS.selectedProfileModel
+      ? { ...DEFAULT_SETTINGS.selectedProfileModel }
+      : null,
+    profileConsents: {},
     selectedModel: { ...DEFAULT_SETTINGS.selectedModel },
     providerCatalogs: {
       deepseek: {
@@ -100,8 +140,8 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     conversationHistory: [],
   };
   private readonly providers: Record<ProviderId, ProviderAdapter> = {
-    deepseek: new DeepSeekAdapter(),
-    kimi: new KimiAdapter(),
+    deepseek: getProviderRegistration("deepseek").createAdapter(),
+    kimi: getProviderRegistration("kimi").createAdapter(),
   };
   readonly documentGate = new CurrentDocumentGate(this.app);
   private readonly saveCoordinator = new RevisionedSaveCoordinator<CurrentNoteAiSettings>({
@@ -167,10 +207,31 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = sanitizeSettings(await this.loadData(), DEFAULT_SETTINGS);
+    const raw = await this.loadData();
+    await this.backupLegacySettings(raw);
+    this.settings = sanitizeSettings(raw, DEFAULT_SETTINGS);
+  }
+
+  private async backupLegacySettings(raw: unknown): Promise<void> {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+    const record = raw as Record<string, unknown>;
+    if (record.schemaVersion === 3 && record.migrationVersion === 3) return;
+
+    const path = normalizePath(
+      `${this.app.vault.configDir}/plugins/${this.manifest.id}/${LEGACY_ROLLBACK_FILE}`,
+    );
+    if (await this.app.vault.adapter.exists(path)) return;
+
+    const serialized = JSON.stringify(raw, null, 2);
+    await this.app.vault.adapter.write(path, serialized);
+    const verified = await this.app.vault.adapter.read(path);
+    if (verified !== serialized) {
+      throw new Error("Current Note AI could not verify its pre-upgrade settings backup; migration was stopped.");
+    }
   }
 
   async saveSettings(): Promise<void> {
+    this.updateLegacyShadows();
     this.saveCoordinator.markDirty();
     await this.saveCoordinator.flush();
   }
@@ -183,71 +244,161 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     await this.saveCoordinator.flush();
   }
 
-  getApiKey(providerId: ProviderId): string {
-    const provider = this.providers[providerId];
-    const secretId = providerId === "deepseek"
-      ? this.settings.secretId
-      : this.settings.kimiSecretId;
-    if (!secretId) {
-      throw new Error(`Choose a ${provider.displayName} API key secret in Current Note AI settings.`);
+  getApiKey(profileId: string): string {
+    const profile = this.requireEnabledProfile(profileId);
+    if (!profile.secretId) {
+      throw new ProfileRoutingError(
+        "missing-secret",
+        `Choose a ${this.providers[profile.providerId].displayName} API key secret for ${profile.label}.`,
+        profile.id,
+      );
     }
-    const apiKey = this.app.secretStorage.getSecret(secretId);
+    const apiKey = this.app.secretStorage.getSecret(profile.secretId);
     if (!apiKey) {
-      throw new Error(`The selected ${provider.displayName} API key secret is empty or unavailable.`);
+      throw new ProfileRoutingError(
+        "missing-secret",
+        `The selected ${this.providers[profile.providerId].displayName} API key secret for ${profile.label} is empty or unavailable.`,
+        profile.id,
+      );
     }
     return apiKey;
   }
 
-  resolveRequestContext(model: ModelRef = this.settings.selectedModel): ProviderRequestContext {
-    const normalized = this.normalizeModelRef(model);
-    const adapter = this.providers[normalized.providerId];
-    const catalog = this.settings.providerCatalogs[normalized.providerId];
-    const descriptor = catalog.models.find((candidate) => candidate.id === normalized.modelId);
-
-    if (normalized.providerId === "kimi") {
-      if (normalized.modelId !== KIMI_SUPPORTED_MODEL) {
-        throw new Error(`Kimi model ${normalized.modelId} is not supported by this plugin version.`);
-      }
-      if (!descriptor) {
-        throw new Error("Kimi K2.6 is not in the last successful model list. Test the Kimi connection first.");
-      }
+  async addProfile(providerId: ProviderId): Promise<string> {
+    this.requireProvider(providerId);
+    if (this.settings.providerProfiles.length >= MAX_PROVIDER_PROFILES) {
+      throw new Error(`You can configure at most ${MAX_PROVIDER_PROFILES} provider profiles.`);
     }
+    const id = createProfileId(new Set(this.settings.providerProfiles.map((profile) => profile.id)));
+    const profile: ProviderProfile = {
+      id,
+      label: nextProfileLabel(this.settings.providerProfiles, providerId),
+      providerId,
+      secretId: "",
+      enabled: true,
+      revision: 1,
+      catalog: { models: [], lastSuccessfulRefreshAt: 0 },
+    };
+    this.settings.providerProfiles = [...this.settings.providerProfiles, profile];
+    await this.saveSettings();
+    this.notifyOpenViews();
+    return id;
+  }
 
-    const remoteContext = descriptor?.contextWindowTokens;
-    const contextWindowTokens = normalized.providerId === "kimi"
+  async updateProfile(
+    profileId: string,
+    changes: Partial<Pick<ProviderProfile, "label" | "secretId" | "enabled">>,
+  ): Promise<void> {
+    const profile = this.requireProfile(profileId);
+    const label = changes.label === undefined ? profile.label : changes.label.trim();
+    const secretId = changes.secretId === undefined ? profile.secretId : changes.secretId.trim();
+    if (!label || label.length > 200) throw new Error("Choose a profile label between 1 and 200 characters.");
+    if (secretId.length > 500) throw new Error("Choose a valid vault secret reference.");
+    if (changes.enabled !== undefined && typeof changes.enabled !== "boolean") {
+      throw new Error("Profile enabled must be a boolean.");
+    }
+    const changed = label !== profile.label
+      || secretId !== profile.secretId
+      || (changes.enabled !== undefined && changes.enabled !== profile.enabled);
+    if (!changed) return;
+    const identityChanged = secretId !== profile.secretId
+      || (changes.enabled !== undefined && changes.enabled !== profile.enabled);
+    const next = {
+      ...profile,
+      label,
+      secretId,
+      ...(changes.enabled === undefined ? {} : { enabled: changes.enabled }),
+      revision: identityChanged ? profile.revision + 1 : profile.revision,
+      catalog: identityChanged
+        ? { models: [], lastSuccessfulRefreshAt: 0 }
+        : profile.catalog,
+    };
+    this.settings.providerProfiles = this.settings.providerProfiles.map((candidate) => candidate.id === profileId ? next : candidate);
+    if (identityChanged) {
+      delete this.settings.profileConsents[profileId];
+      if (this.settings.selectedProfileModel?.profileId === profileId) this.settings.selectedProfileModel = null;
+    }
+    this.updateLegacyShadows();
+    await this.saveSettings();
+    this.notifyOpenViews();
+  }
+
+  async deleteProfile(profileId: string): Promise<void> {
+    this.requireProfile(profileId);
+    this.settings.providerProfiles = this.settings.providerProfiles.filter((profile) => profile.id !== profileId);
+    delete this.settings.profileConsents[profileId];
+    if (this.settings.selectedProfileModel?.profileId === profileId) this.settings.selectedProfileModel = null;
+    this.updateLegacyShadows();
+    await this.saveSettings();
+    this.notifyOpenViews();
+  }
+
+  async moveProfile(profileId: string, direction: -1 | 1): Promise<void> {
+    this.requireProfile(profileId);
+    const index = this.settings.providerProfiles.findIndex((profile) => profile.id === profileId);
+    const target = index + direction;
+    if (target < 0 || target >= this.settings.providerProfiles.length) return;
+    const profiles = [...this.settings.providerProfiles];
+    const [profile] = profiles.splice(index, 1);
+    if (profile) profiles.splice(target, 0, profile);
+    this.settings.providerProfiles = profiles;
+    await this.saveSettings();
+    this.notifyOpenViews();
+  }
+
+  async resetProfileConsent(profileId: string): Promise<void> {
+    this.requireProfile(profileId);
+    delete this.settings.profileConsents[profileId];
+    await this.saveSettings();
+    this.notifyOpenViews();
+  }
+
+  resolveRequestContext(
+    model: ProfileModelRef | FrozenRequestTarget | ModelRef | null = this.settings.selectedProfileModel,
+  ): ProviderRequestContext {
+    const target = this.resolveFrozenTarget(model);
+    const profile = this.requireEnabledProfile(target.profileId);
+    if (profile.revision !== target.profileRevision) {
+      throw new ProfileRoutingError("revision-mismatch", `Profile ${profile.label} changed; select its model again.`, profile.id);
+    }
+    if (profile.providerId !== target.providerId) {
+      throw new ProfileRoutingError("revision-mismatch", `Profile ${profile.label} no longer matches the selected provider.`, profile.id);
+    }
+    const descriptor = profile.catalog.models.find((candidate) => candidate.id === target.modelId);
+    if (!descriptor || (profile.providerId === "kimi" && target.modelId !== KIMI_SUPPORTED_MODEL)) {
+      throw new ProfileRoutingError("unknown-model", `Model ${target.modelId} is not in the last successful model list for ${profile.label}.`, profile.id);
+    }
+    const adapter = this.providers[profile.providerId];
+    const remoteContext = descriptor.contextWindowTokens;
+    const contextWindowTokens = profile.providerId === "kimi"
       ? Math.min(remoteContext ?? KIMI_CONTEXT_WINDOW_TOKENS, KIMI_CONTEXT_WINDOW_TOKENS)
       : remoteContext ?? DEEPSEEK_FALLBACK_CONTEXT_WINDOW_TOKENS;
-
+    const profileModel = { profileId: profile.id, modelId: target.modelId };
     return {
-      model: normalized,
+      profile,
+      profileModel,
+      target: freezeTarget(profile, target.modelId),
+      model: { providerId: profile.providerId, modelId: target.modelId },
       adapter,
       displayName: adapter.displayName,
+      destination: getProviderRegistration(profile.providerId).baseUrl,
       contextWindowTokens,
     };
   }
 
-  async selectModel(model: ModelRef): Promise<void> {
-    const normalized = this.normalizeModelRef(model);
-    this.resolveRequestContext(normalized);
-
-    this.settings.selectedModel = normalized;
-    if (normalized.providerId === "deepseek") {
-      this.settings.model = normalized.modelId;
-      if (!this.settings.availableModels.includes(normalized.modelId)) {
-        this.settings.availableModels = [...this.settings.availableModels, normalized.modelId];
-      }
-      const catalog = this.settings.providerCatalogs.deepseek;
-      if (!catalog.models.some((candidate) => candidate.id === normalized.modelId)) {
-        catalog.models = [...catalog.models, { id: normalized.modelId }];
-      }
-    }
+  async selectModel(model: ProfileModelRef | ModelRef): Promise<void> {
+    const context = this.resolveRequestContext(model);
+    this.settings.selectedProfileModel = { ...context.profileModel };
+    this.updateLegacyShadows();
     await this.saveSettings();
     this.notifyOpenViews();
   }
 
   async refreshModels(): Promise<ProviderRefreshSummary> {
     const results = await Promise.all(
-      (["deepseek", "kimi"] as const).map((providerId) => this.refreshProvider(providerId)),
+      this.settings.providerProfiles
+        .filter((profile) => profile.enabled)
+        .map((profile) => this.refreshProvider(profile.id)),
     );
     if (results.some((result) => result.status === "updated")) {
       await this.saveSettings();
@@ -256,8 +407,12 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     return { results };
   }
 
-  async testConnection(providerId: ProviderId): Promise<string[]> {
-    const result = await this.refreshProvider(providerId);
+  async testConnection(profileId: string): Promise<string[]> {
+    this.requireEnabledProfile(profileId);
+    // Surface local configuration errors with their stable routing code and
+    // guarantee that no adapter call can happen for an absent secret.
+    this.getApiKey(profileId);
+    const result = await this.refreshProvider(profileId);
     if (result.status !== "updated") {
       throw new Error(result.error ?? `${result.displayName} is not configured.`);
     }
@@ -269,28 +424,141 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     return result.models;
   }
 
-  private normalizeModelRef(model: ModelRef): ModelRef {
-    if (model.providerId !== "deepseek" && model.providerId !== "kimi") {
-      throw new Error("Choose a recognized AI provider.");
-    }
-    const modelId = model.modelId.trim();
-    if (!modelId || modelId.length > 200) {
-      throw new Error(`Choose a valid ${this.providers[model.providerId].displayName} model.`);
-    }
-    return { providerId: model.providerId, modelId };
+  private requireProvider(providerId: ProviderId): ProviderAdapter {
+    const adapter = this.providers[providerId];
+    if (!adapter) throw new ProfileRoutingError("invalid-selection", "Choose a recognized AI provider.");
+    return adapter;
   }
 
-  private async refreshProvider(providerId: ProviderId): Promise<ProviderRefreshResult> {
+  private requireProfile(profileId: string): ProviderProfile {
+    const profile = findProfile(this.settings.providerProfiles, profileId);
+    if (!profile) {
+      throw new ProfileRoutingError("missing-profile", `Provider profile ${profileId} was not found.`, profileId);
+    }
+    this.requireProvider(profile.providerId);
+    return profile;
+  }
+
+  private requireEnabledProfile(profileId: string): ProviderProfile {
+    const profile = this.requireProfile(profileId);
+    if (!profile.enabled) {
+      throw new ProfileRoutingError("disabled-profile", `Provider profile ${profile.label} is disabled.`, profile.id);
+    }
+    return profile;
+  }
+
+  private resolveFrozenTarget(
+    model: ProfileModelRef | FrozenRequestTarget | ModelRef | null,
+  ): FrozenRequestTarget {
+    if (!model) {
+      throw new ProfileRoutingError("invalid-selection", "Choose a provider profile and model before sending a request.");
+    }
+    if ("profileId" in model) {
+      const profile = this.requireProfile(model.profileId);
+      const modelId = typeof model.modelId === "string" ? model.modelId.trim() : "";
+      if (!modelId || modelId.length > 200) {
+        throw new ProfileRoutingError("invalid-selection", "Choose a valid model.", profile.id);
+      }
+      const revision = "profileRevision" in model ? model.profileRevision : profile.revision;
+      if (typeof revision !== "number" || revision !== profile.revision) {
+        throw new ProfileRoutingError("revision-mismatch", `Profile ${profile.label} changed; select its model again.`, profile.id);
+      }
+      return {
+        profileId: profile.id,
+        profileRevision: revision,
+        providerId: "providerId" in model ? model.providerId : profile.providerId,
+        modelId,
+      };
+    }
+    // Compatibility for pre-profile request call sites: only the deterministic
+    // legacy profile for that provider is eligible; no arbitrary fallback occurs.
+    if (model.providerId !== "deepseek" && model.providerId !== "kimi") {
+      throw new ProfileRoutingError("invalid-selection", "Choose a recognized AI provider.");
+    }
+    const profileId = model.providerId === "deepseek"
+      ? LEGACY_DEEPSEEK_PROFILE_ID
+      : LEGACY_KIMI_PROFILE_ID;
+    const profile = this.requireProfile(profileId);
+    return {
+      profileId,
+      profileRevision: profile.revision,
+      providerId: profile.providerId,
+      modelId: typeof model.modelId === "string" ? model.modelId.trim() : "",
+    };
+  }
+
+  /** Keep rollback fields coherent only when their profile identity is deterministic. */
+  private updateLegacyShadows(): void {
+    const deepseek = this.settings.providerProfiles.find((profile) => profile.id === LEGACY_DEEPSEEK_PROFILE_ID);
+    const kimi = this.settings.providerProfiles.find((profile) => profile.id === LEGACY_KIMI_PROFILE_ID);
+    if (deepseek) {
+      this.settings.secretId = deepseek.secretId;
+      this.settings.providerCatalogs.deepseek = {
+        models: deepseek.catalog.models.map((model) => ({ ...model })),
+        lastSuccessfulRefreshAt: deepseek.catalog.lastSuccessfulRefreshAt,
+      };
+      this.settings.availableModels = deepseek.catalog.models.map((model) => model.id);
+    }
+    if (kimi) {
+      this.settings.kimiSecretId = kimi.secretId;
+      this.settings.providerCatalogs.kimi = {
+        models: kimi.catalog.models.map((model) => ({ ...model })),
+        lastSuccessfulRefreshAt: kimi.catalog.lastSuccessfulRefreshAt,
+      };
+    }
+    // Legacy consent fields are shadows of the deterministic legacy profiles;
+    // duplicate/non-legacy accounts never modify them.
+    const deepseekConsent = deepseek ? this.settings.profileConsents[deepseek.id] : undefined;
+    const kimiConsent = kimi ? this.settings.profileConsents[kimi.id] : undefined;
+    if (deepseekConsent) {
+      this.settings.providerConsents.deepseek = {
+        disclosureRevision: deepseekConsent.disclosureRevision,
+        acceptedAt: deepseekConsent.acceptedAt,
+      };
+    } else {
+      delete this.settings.providerConsents.deepseek;
+    }
+    if (kimiConsent) {
+      this.settings.providerConsents.kimi = {
+        disclosureRevision: kimiConsent.disclosureRevision,
+        acceptedAt: kimiConsent.acceptedAt,
+      };
+    } else {
+      delete this.settings.providerConsents.kimi;
+    }
+    const selected = this.settings.selectedProfileModel;
+    const selectedProfile = selected
+      ? this.settings.providerProfiles.find((profile) => profile.id === selected.profileId)
+      : undefined;
+    if (selected && selectedProfile && (selectedProfile.id === LEGACY_DEEPSEEK_PROFILE_ID || selectedProfile.id === LEGACY_KIMI_PROFILE_ID)) {
+      this.settings.selectedModel = { providerId: selectedProfile.providerId, modelId: selected.modelId };
+      if (selectedProfile.id === LEGACY_DEEPSEEK_PROFILE_ID) this.settings.model = selected.modelId;
+    }
+    // `consentAcknowledged` is a legacy DeepSeek-only shadow.
+    this.settings.consentAcknowledged = Boolean(this.settings.providerConsents.deepseek);
+  }
+
+  private async refreshProvider(profileId: string): Promise<ProviderRefreshResult> {
+    const profile = this.requireProfile(profileId);
+    const providerId = profile.providerId;
     const adapter = this.providers[providerId];
+    if (!profile.enabled) {
+      return {
+        profileId: profile.id, providerId, displayName: adapter.displayName, status: "skipped",
+        models: profile.catalog.models.map((model) => model.id), excludedCount: 0,
+        error: `${profile.label} is disabled.`,
+      };
+    }
     let apiKey: string;
     try {
-      apiKey = this.getApiKey(providerId);
+      apiKey = this.getApiKey(profile.id);
     } catch (error) {
       return {
+        profileId: profile.id,
         providerId,
         displayName: adapter.displayName,
         status: "skipped",
-        models: this.settings.providerCatalogs[providerId].models.map((model) => model.id),
+        models: profile.catalog.models.map((model) => model.id),
         excludedCount: 0,
         error: error instanceof Error ? error.message : `${adapter.displayName} is not configured.`,
       };
@@ -312,14 +580,13 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
         );
       }
 
-      this.settings.providerCatalogs[providerId] = {
+      profile.catalog = {
         models: compatible,
         lastSuccessfulRefreshAt: Date.now(),
       };
-      if (providerId === "deepseek") {
-        this.settings.availableModels = compatible.map((model) => model.id);
-      }
+      this.updateLegacyShadows();
       return {
+        profileId: profile.id,
         providerId,
         displayName: adapter.displayName,
         status: "updated",
@@ -328,10 +595,11 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
       };
     } catch (error) {
       return {
+        profileId: profile.id,
         providerId,
         displayName: adapter.displayName,
         status: "failed",
-        models: this.settings.providerCatalogs[providerId].models.map((model) => model.id),
+        models: profile.catalog.models.map((model) => model.id),
         excludedCount: 0,
         error: error instanceof Error ? error.message : `${adapter.displayName} model refresh failed.`,
       };

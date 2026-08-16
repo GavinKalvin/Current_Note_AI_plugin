@@ -1,8 +1,16 @@
 export type ProviderRole = "system" | "user" | "assistant";
-export type ProviderId = "deepseek" | "kimi";
+export type ProviderKind = "deepseek" | "kimi";
+// Kept as an alias for adapter and v0.1.6 history compatibility.
+export type ProviderId = ProviderKind;
+export type ProfileId = string;
 
 export interface ModelRef {
   providerId: ProviderId;
+  modelId: string;
+}
+
+export interface ProfileModelRef {
+  profileId: ProfileId;
   modelId: string;
 }
 
@@ -56,9 +64,31 @@ export interface ProviderModelCatalog {
   lastSuccessfulRefreshAt: number;
 }
 
+export interface ProviderProfile {
+  id: ProfileId;
+  label: string;
+  providerId: ProviderId;
+  secretId: string;
+  enabled: boolean;
+  revision: number;
+  catalog: ProviderModelCatalog;
+}
+
+export interface FrozenRequestTarget {
+  profileId: ProfileId;
+  profileRevision: number;
+  providerId: ProviderId;
+  modelId: string;
+}
+
 export interface ProviderConsentGrant {
   disclosureRevision: number;
   acceptedAt: number;
+}
+
+export interface ProfileConsentGrant extends ProviderConsentGrant {
+  profileRevision: number;
+  providerId: ProviderId;
 }
 
 export interface ConversationMessage {
@@ -74,6 +104,7 @@ export interface ConversationMessage {
   continuationCount?: number;
   providerId?: ProviderId;
   modelId?: string;
+  target?: FrozenRequestTarget;
 }
 
 export interface SavedConversation {

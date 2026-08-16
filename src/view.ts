@@ -25,10 +25,12 @@ import type {
   ConversationMessage,
   DocumentSnapshot,
   EditProposalCandidate,
-  ModelRef,
+  FrozenRequestTarget,
+  ProfileModelRef,
   ProviderMessage,
   SavedConversation,
 } from "./types";
+import { PROVIDER_PRESETS, sameProfileModel } from "./core/provider-profiles";
 
 export const CURRENT_NOTE_AI_VIEW = "current-note-ai-view";
 const MAX_DOCUMENT_CHARACTERS = 1_500_000;
@@ -48,7 +50,7 @@ interface EditRetryState {
   nextMaxTokens: number | null;
   retryAttempted: boolean;
   reason: string;
-  model: ModelRef;
+  target: FrozenRequestTarget;
 }
 
 interface AppliedChange {
@@ -266,39 +268,44 @@ export class CurrentNoteAiView extends ItemView {
         title: "Model used for the next AI request",
       },
     });
-    const optionModels = new Map<string, ModelRef>();
+    const optionModels = new Map<string, ProfileModelRef>();
     let selectedOption = "";
     let optionSequence = 0;
-    for (const providerId of ["deepseek", "kimi"] as const) {
-      const providerLabel = providerId === "deepseek" ? "DeepSeek" : "Kimi";
-      const group = modelSelect.createEl("optgroup", { attr: { label: providerLabel } });
-      const catalogModels = this.plugin.settings.providerCatalogs[providerId].models;
-      const selected = this.plugin.settings.selectedModel.providerId === providerId
-        ? this.plugin.settings.selectedModel
+    const placeholder = modelSelect.createEl("option", {
+      text: "Choose a profile and model",
+      value: "",
+    });
+    placeholder.disabled = true;
+    for (const profile of this.plugin.settings.providerProfiles) {
+      if (!profile.enabled) continue;
+      const group = modelSelect.createEl("optgroup", {
+        attr: { label: `${profile.label} · ${PROVIDER_PRESETS[profile.providerId].displayName}` },
+      });
+      const catalogModels = profile.catalog.models;
+      const selected = this.plugin.settings.selectedProfileModel?.profileId === profile.id
+        ? this.plugin.settings.selectedProfileModel
         : null;
       const models = [...catalogModels];
       if (selected && !models.some((model) => model.id === selected.modelId)) {
         models.unshift({ id: selected.modelId });
       }
       for (const model of models) {
-        const ref = { providerId, modelId: model.id } satisfies ModelRef;
+        const ref = { profileId: profile.id, modelId: model.id } satisfies ProfileModelRef;
         const optionKey = `model-${optionSequence++}`;
         optionModels.set(optionKey, ref);
-        const unavailable = providerId === "kimi"
-          && selected?.modelId === model.id
-          && !catalogModels.some((candidate) => candidate.id === model.id);
+        const unavailable = !catalogModels.some((candidate) => candidate.id === model.id);
         const option = group.createEl("option", {
           text: unavailable ? `${model.id} (unavailable)` : model.id,
           value: optionKey,
         });
-        if (unavailable) option.disabled = true;
-        if (this.sameModelRef(ref, this.plugin.settings.selectedModel)) {
+        option.disabled = unavailable;
+        if (this.sameProfileModel(ref, this.plugin.settings.selectedProfileModel)) {
           selectedOption = optionKey;
         }
       }
     }
     modelSelect.value = selectedOption;
-    modelSelect.disabled = this.busy || this.modelLoading;
+    modelSelect.disabled = this.busy || this.modelLoading || optionModels.size === 0;
     modelSelect.addEventListener("change", () => {
       const selected = optionModels.get(modelSelect.value);
       if (selected) void this.chooseModel(selected);
@@ -419,7 +426,7 @@ export class CurrentNoteAiView extends ItemView {
     }).format(new Date(timestamp));
   }
 
-  private async chooseModel(model: ModelRef): Promise<void> {
+  private async chooseModel(model: ProfileModelRef): Promise<void> {
     try {
       await this.plugin.selectModel(model);
       this.errorMessage = "";
@@ -429,8 +436,8 @@ export class CurrentNoteAiView extends ItemView {
     this.render();
   }
 
-  private sameModelRef(left: ModelRef, right: ModelRef): boolean {
-    return left.providerId === right.providerId && left.modelId === right.modelId;
+  private sameProfileModel(left: ProfileModelRef, right: ProfileModelRef | null): boolean {
+    return sameProfileModel(left, right);
   }
 
   private async refreshModels(): Promise<void> {
@@ -555,6 +562,7 @@ export class CurrentNoteAiView extends ItemView {
       && !this.hasHistoryBindingMismatch()
       && this.messages.at(-1)?.id === message.id
       && message.requestKind === "discussion"
+      && message.target !== undefined
       && message.finishReason === "length"
       && typeof message.noteHash === "string"
       && (message.continuationCount ?? 0) < MAX_DISCUSSION_CONTINUATIONS;
@@ -759,30 +767,30 @@ export class CurrentNoteAiView extends ItemView {
   ): Promise<boolean> {
     const includesCrossProviderHistory = history.some((message) => {
       if (message.role !== "assistant") return false;
-      const sourceProvider = message.providerId ?? "deepseek";
-      return sourceProvider !== context.model.providerId;
+      if (message.target === undefined) return true;
+      return message.target.profileId !== context.profile.id;
     });
     const requiredRevision = includesCrossProviderHistory ? 2 : 1;
-    const grant = this.plugin.settings.providerConsents[context.model.providerId];
-    if (grant && grant.disclosureRevision >= requiredRevision) return true;
+    const grant = this.plugin.settings.profileConsents[context.profile.id];
+    if (grant
+      && grant.profileRevision === context.profile.revision
+      && grant.providerId === context.profile.providerId
+      && grant.disclosureRevision >= requiredRevision) return true;
 
-    const providerHost = context.model.providerId === "deepseek"
-      ? "api.deepseek.com"
-      : "api.moonshot.ai";
     const accepted = await new FullNoteConsentModal(
       this.app,
+      context.profile.label,
       context.displayName,
-      providerHost,
+      context.destination,
       includesCrossProviderHistory,
     ).request();
     if (!accepted) return false;
-    this.plugin.settings.providerConsents[context.model.providerId] = {
+    this.plugin.settings.profileConsents[context.profile.id] = {
       disclosureRevision: requiredRevision,
       acceptedAt: Date.now(),
+      profileRevision: context.profile.revision,
+      providerId: context.profile.providerId,
     };
-    if (context.model.providerId === "deepseek") {
-      this.plugin.settings.consentAcknowledged = true;
-    }
     await this.plugin.saveSettings();
     return true;
   }
@@ -823,7 +831,7 @@ export class CurrentNoteAiView extends ItemView {
       model: context.model.modelId,
       maxTokens,
       responseFormat,
-      ...(context.model.providerId === "deepseek"
+      ...(context.profile.providerId === "deepseek"
         ? { temperature: this.plugin.settings.temperature }
         : {}),
     };
@@ -973,7 +981,7 @@ export class CurrentNoteAiView extends ItemView {
       );
       this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens, context);
       const response = await context.adapter.complete(
-        this.plugin.getApiKey(context.model.providerId),
+        this.plugin.getApiKey(context.profile.id),
         {
         messages: providerMessages,
           options: this.completionOptions(context, this.plugin.settings.maxTokens, "text"),
@@ -990,6 +998,7 @@ export class CurrentNoteAiView extends ItemView {
         continuationCount: 0,
         providerId: context.model.providerId,
         modelId: context.model.modelId,
+        target: context.target,
       }));
       await this.persistConversation(snapshot);
     } catch (error) {
@@ -1010,10 +1019,12 @@ export class CurrentNoteAiView extends ItemView {
 
     try {
       const history = this.messages.slice();
-      const originModel = incompleteMessage.providerId && incompleteMessage.modelId
-        ? { providerId: incompleteMessage.providerId, modelId: incompleteMessage.modelId }
-        : this.plugin.settings.selectedModel;
-      const context = this.plugin.resolveRequestContext(originModel);
+      if (!incompleteMessage.target) {
+        throw new CurrentDocumentError(
+          "This legacy response has no frozen provider target and cannot be continued safely. Ask the question again.",
+        );
+      }
+      const context = this.plugin.resolveRequestContext(incompleteMessage.target);
       this.activeRequestProviderName = context.displayName;
       if (!await this.ensureConsent(context, history)) return;
       const snapshot = this.captureCurrentSnapshot();
@@ -1035,7 +1046,7 @@ export class CurrentNoteAiView extends ItemView {
       );
       this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens, context);
       const response = await context.adapter.complete(
-        this.plugin.getApiKey(context.model.providerId),
+        this.plugin.getApiKey(context.profile.id),
         {
           messages: providerMessages,
           options: this.completionOptions(context, this.plugin.settings.maxTokens, "text"),
@@ -1065,6 +1076,7 @@ export class CurrentNoteAiView extends ItemView {
         continuationCount: (incompleteMessage.continuationCount ?? 0) + 1,
         providerId: context.model.providerId,
         modelId: context.model.modelId,
+        target: context.target,
       }));
       await this.persistConversation(snapshot);
     } catch (error) {
@@ -1108,7 +1120,7 @@ export class CurrentNoteAiView extends ItemView {
       );
       this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens, context);
       const response = await context.adapter.complete(
-        this.plugin.getApiKey(context.model.providerId),
+        this.plugin.getApiKey(context.profile.id),
         {
           messages: providerMessages,
           options: this.completionOptions(context, this.plugin.settings.maxTokens, "json"),
@@ -1123,7 +1135,7 @@ export class CurrentNoteAiView extends ItemView {
           this.plugin.settings.maxTokens,
           false,
           `${context.displayName} ended with finish_reason=${response.finishReason}. The partial JSON was discarded and cannot be applied.`,
-          context.model,
+          context.target,
         );
         return;
       }
@@ -1143,7 +1155,7 @@ export class CurrentNoteAiView extends ItemView {
             this.plugin.settings.maxTokens,
             false,
             error.message,
-            context.model,
+            context.target,
           );
           return;
         }
@@ -1163,6 +1175,7 @@ export class CurrentNoteAiView extends ItemView {
         noteHash: snapshot.hash,
         providerId: context.model.providerId,
         modelId: context.model.modelId,
+        target: context.target,
       }));
       await this.persistConversation(snapshot);
     } catch (error) {
@@ -1184,7 +1197,7 @@ export class CurrentNoteAiView extends ItemView {
     maxTokensUsed: number,
     retryAttempted: boolean,
     reason: string,
-    model: ModelRef,
+    target: FrozenRequestTarget,
   ): EditRetryState {
     return {
       snapshot,
@@ -1194,7 +1207,7 @@ export class CurrentNoteAiView extends ItemView {
       nextMaxTokens: retryAttempted ? null : nextEditRetryBudget(maxTokensUsed),
       retryAttempted,
       reason,
-      model: { ...model },
+      target: { ...target },
     };
   }
 
@@ -1204,7 +1217,7 @@ export class CurrentNoteAiView extends ItemView {
     const retryBudget = retry.nextMaxTokens;
 
     try {
-      const context = this.plugin.resolveRequestContext(retry.model);
+      const context = this.plugin.resolveRequestContext(retry.target);
       this.activeRequestProviderName = context.displayName;
       if (!await this.ensureConsent(context, this.messages)) return;
       const currentSnapshot = this.captureCurrentSnapshot();
@@ -1229,7 +1242,7 @@ export class CurrentNoteAiView extends ItemView {
       );
       this.assertRequestBudget(providerMessages, retryBudget, context);
       const response = await context.adapter.complete(
-        this.plugin.getApiKey(context.model.providerId),
+        this.plugin.getApiKey(context.profile.id),
         {
           messages: providerMessages,
           options: this.completionOptions(context, retryBudget, "json"),
@@ -1245,7 +1258,7 @@ export class CurrentNoteAiView extends ItemView {
           retryBudget,
           true,
           `${context.displayName}'s ${retryBudget.toLocaleString()}-token retry also ended with finish_reason=${response.finishReason}. Narrow the edit request before trying again.`,
-          context.model,
+          context.target,
         );
         return;
       }
@@ -1265,7 +1278,7 @@ export class CurrentNoteAiView extends ItemView {
             retryBudget,
             true,
             `${error.message} Narrow the edit request before trying again.`,
-            context.model,
+            context.target,
           );
           return;
         }
@@ -1286,6 +1299,7 @@ export class CurrentNoteAiView extends ItemView {
         noteHash: retry.snapshot.hash,
         providerId: context.model.providerId,
         modelId: context.model.modelId,
+        target: context.target,
       }));
       await this.persistConversation(retry.snapshot);
     } catch (error) {

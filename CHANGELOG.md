@@ -2,6 +2,19 @@
 
 All notable changes to Current Note AI are documented here.
 
+## Unreleased
+
+### Added
+
+- Add ordered multi-account profiles for DeepSeek and Kimi, each with an independent SecretStorage reference, model catalog, connection test, consent, and enabled state.
+- Group every enabled profile in the existing single model selector and freeze the selected profile/model for discussion, edit, continuation, and edit retry requests.
+- Add schema-v3 migration plus a one-time v0.1.6 settings rollback snapshot.
+
+### Security
+
+- Fail closed when a frozen profile is missing, disabled, changed, unconfigured, or no longer exposes its model; never fall back to another account.
+- Keep provider destinations in the code-owned adapter registry. Arbitrary custom endpoints remain unsupported.
+
 ## 0.1.6 - 2026-08-16
 
 ### Added

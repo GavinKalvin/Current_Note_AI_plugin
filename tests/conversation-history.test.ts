@@ -144,6 +144,61 @@ describe("conversation history persistence", () => {
     expect(result?.messages[0]).not.toHaveProperty("modelId");
   });
 
+  it("backfills deterministic legacy targets only from explicit provider/model provenance", () => {
+    const explicit = conversation("explicit-target", 10);
+    explicit.messages[0] = {
+      ...explicit.messages[0]!,
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+    };
+    const missing = conversation("missing-target", 9);
+    const providerOnly = conversation("provider-only-target", 8);
+    providerOnly.messages[0] = { ...providerOnly.messages[0]!, providerId: "kimi" };
+
+    const result = sanitizeConversationHistory([explicit, missing, providerOnly]);
+    const byId = new Map(result.map((item) => [item.id, item.messages[0]]));
+    expect(byId.get("explicit-target")?.target).toEqual({
+      profileId: "legacy-deepseek",
+      profileRevision: 1,
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+    });
+    expect(byId.get("missing-target")?.target).toBeUndefined();
+    expect(byId.get("provider-only-target")?.target).toBeUndefined();
+  });
+
+  it("sanitizes an explicit frozen target and drops malformed targets", () => {
+    const valid = conversation("valid-target", 10);
+    valid.messages[0] = {
+      ...valid.messages[0]!,
+      target: {
+        profileId: " custom-profile ",
+        profileRevision: 2,
+        providerId: "kimi",
+        modelId: " kimi-k2.6 ",
+      },
+    };
+    const invalid = conversation("invalid-target", 9);
+    invalid.messages[0] = {
+      ...invalid.messages[0]!,
+      target: {
+        profileId: "custom-profile",
+        profileRevision: 0,
+        providerId: "kimi",
+        modelId: "kimi-k2.6",
+      },
+    };
+
+    const result = sanitizeConversationHistory([valid, invalid]);
+    expect(result.find((item) => item.id === "valid-target")?.messages[0]?.target).toEqual({
+      profileId: "custom-profile",
+      profileRevision: 2,
+      providerId: "kimi",
+      modelId: "kimi-k2.6",
+    });
+    expect(result.find((item) => item.id === "invalid-target")?.messages[0]?.target).toBeUndefined();
+  });
+
   it("bounds the serialized size of one saved conversation", () => {
     const oversized = conversation("large", 10);
     oversized.messages = Array.from({ length: 12 }, (_, index) => ({

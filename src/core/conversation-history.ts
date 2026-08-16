@@ -6,6 +6,8 @@ export const MAX_SAVED_HISTORY_BYTES = 20 * 1024 * 1024;
 const MAX_SAVED_MESSAGES = 200;
 const MAX_TITLE_CHARACTERS = 36;
 const LEGACY_OUTPUT_LIMIT_SUFFIX = "\n\n[Response stopped because the output limit was reached.]";
+const MAX_PROFILE_ID_LENGTH = 200;
+const MAX_PROFILE_REVISION = 1_000_000;
 
 export function createConversationTitle(content: string, fallbackNoteName: string): string {
   const normalized = content
@@ -139,6 +141,10 @@ function sanitizeMessage(value: unknown): ConversationMessage | null {
     ? value.providerId
     : undefined;
   const modelId = providerId === undefined ? undefined : readTrimmedString(value.modelId, 200);
+  const target = sanitizeTarget(value.target)
+    ?? (providerId !== undefined && modelId !== undefined
+      ? legacyTarget(providerId, modelId)
+      : undefined);
 
   return {
     id,
@@ -152,6 +158,33 @@ function sanitizeMessage(value: unknown): ConversationMessage | null {
     continuationCount,
     usage,
     ...(providerId === undefined ? {} : { providerId, ...(modelId === undefined ? {} : { modelId }) }),
+    ...(target === undefined ? {} : { target }),
+  };
+}
+
+function sanitizeTarget(value: unknown): ConversationMessage["target"] {
+  if (!isRecord(value)) return undefined;
+  const profileId = readTrimmedString(value.profileId, MAX_PROFILE_ID_LENGTH);
+  const profileRevision = readPositiveInteger(value.profileRevision, MAX_PROFILE_REVISION);
+  const providerId = value.providerId === "deepseek" || value.providerId === "kimi"
+    ? value.providerId
+    : undefined;
+  const modelId = readTrimmedString(value.modelId, 200);
+  if (profileId === undefined || profileRevision === undefined || providerId === undefined || modelId === undefined) {
+    return undefined;
+  }
+  return { profileId, profileRevision, providerId, modelId };
+}
+
+function legacyTarget(
+  providerId: "deepseek" | "kimi",
+  modelId: string,
+): ConversationMessage["target"] {
+  return {
+    profileId: providerId === "deepseek" ? "legacy-deepseek" : "legacy-kimi",
+    profileRevision: 1,
+    providerId,
+    modelId,
   };
 }
 
@@ -202,6 +235,12 @@ function readNonNegativeNumber(value: unknown): number | undefined {
 
 function readNonNegativeInteger(value: unknown, max: number): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= max
+    ? value
+    : undefined;
+}
+
+function readPositiveInteger(value: unknown, max: number): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= max
     ? value
     : undefined;
 }

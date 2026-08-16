@@ -6,8 +6,9 @@ export class FullNoteConsentModal extends Modal {
 
   constructor(
     app: App,
+    private readonly profileLabel: string,
     private readonly providerName: string,
-    private readonly providerHost: string,
+    private readonly destination: string,
     private readonly includesCrossProviderHistory: boolean,
   ) {
     super(app);
@@ -26,7 +27,7 @@ export class FullNoteConsentModal extends Modal {
     contentEl.addClass("current-note-ai-consent");
     contentEl.createEl("h3", { text: "Send the full current note?" });
     contentEl.createEl("p", {
-      text: `Current Note AI will send the complete Markdown source of the bound note and this in-memory conversation to ${this.providerName} (${this.providerHost}).`,
+      text: `Current Note AI will send the complete Markdown source of the bound note and this in-memory conversation to the ${this.profileLabel} profile (${this.providerName}) at ${this.destination}.`,
     });
     const list = contentEl.createEl("ul");
     list.createEl("li", { text: "Includes unsaved text and frontmatter." });

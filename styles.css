@@ -644,6 +644,25 @@
   margin-top: 18px;
 }
 
+.current-note-ai-profile-add-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 16px;
+}
+
+.current-note-ai-profile-card {
+  margin: 12px 0;
+  padding: 4px 14px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-l);
+  background: var(--background-secondary);
+}
+
+.current-note-ai-profile-card .setting-item:last-child {
+  border-bottom: 0;
+}
+
 @media (max-width: 430px) {
   .current-note-ai-header,
   .current-note-ai-context,

@@ -3,7 +3,11 @@ import { sanitizeSettings } from "../src/core/settings-sanitization";
 import type { CurrentNoteAiSettings } from "../src/settings";
 
 const defaults: CurrentNoteAiSettings = {
-  schemaVersion: 2,
+  schemaVersion: 3,
+  providerProfiles: [],
+  selectedProfileModel: null,
+  profileConsents: {},
+  migrationVersion: 3,
   selectedModel: { providerId: "deepseek", modelId: "deepseek-v4-flash" },
   kimiSecretId: "",
   providerCatalogs: {
@@ -37,7 +41,7 @@ describe("sanitizeSettings", () => {
     };
     const result = sanitizeSettings(legacy, defaults);
 
-    expect(result.schemaVersion).toBe(2);
+    expect(result.schemaVersion).toBe(3);
     expect(result.selectedModel).toEqual({ providerId: "deepseek", modelId: "legacy-model" });
     expect(result.secretId).toBe("deepseek-secret");
     expect(result.model).toBe("legacy-model");
@@ -96,7 +100,7 @@ describe("sanitizeSettings", () => {
       consentAcknowledged: "true",
     }, defaults);
 
-    expect(result.schemaVersion).toBe(2);
+    expect(result.schemaVersion).toBe(3);
     expect(result.selectedModel).toEqual({ providerId: "deepseek", modelId: defaults.model });
     expect(result.secretId).toBe("");
     expect(result.kimiSecretId).toBe("");
