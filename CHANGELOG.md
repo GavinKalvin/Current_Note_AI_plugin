@@ -4,21 +4,17 @@ All notable changes to Current Note AI are documented here.
 
 ## Unreleased
 
-### Added
-
-- Add ordered multi-account profiles for DeepSeek and Kimi, each with an independent SecretStorage reference, model catalog, connection test, consent, and enabled state.
-- Group every enabled profile in the existing single model selector and freeze the selected profile/model for discussion, edit, continuation, and edit retry requests.
-- Add schema-v3 migration plus a one-time v0.1.6 settings rollback snapshot.
-
-### Security
-
-- Fail closed when a frozen profile is missing, disabled, changed, unconfigured, or no longer exposes its model; never fall back to another account.
-- Keep provider destinations in the code-owned adapter registry. Arbitrary custom endpoints remain unsupported.
+No unreleased changes.
 
 ## 0.1.6 - 2026-08-16
 
 ### Added
 
+- Adapt Current Note AI to Kimi alongside DeepSeek, with `/models`-verified `kimi-k2.6` support.
+- Add ordered multi-account profiles for DeepSeek and Kimi, each with an independent SecretStorage reference, model catalog, connection test, consent, and enabled state.
+- Group every enabled profile in the existing single model selector and freeze the selected profile/model for discussion, edit, continuation, and edit retry requests.
+- Add explicit Kimi China (`api.moonshot.cn`) and International (`api.moonshot.ai`) endpoint presets per profile. Existing unlabelled Kimi profiles migrate to China; keys are never silently retried across regions.
+- Add schema-v3 migration plus a one-time v0.1.6 settings rollback snapshot.
 - Show DeepSeek and Kimi models together in the same model dropdown; no separate provider selector is added.
 - Add independent API key and `/models` connection testing for DeepSeek and Kimi. The first Kimi release supports only `kimi-k2.6`, after it is verified by `/models`.
 - Add provider-level privacy consent, cross-provider history disclosure, and provider/model attribution on conversation messages.
@@ -28,6 +24,12 @@ All notable changes to Current Note AI are documented here.
 
 - Migrate legacy v0.1.5 DeepSeek settings without loss and retain rollback-compatible DeepSeek shadow fields.
 - Temperature applies to DeepSeek only. Kimi requests are non-streaming with thinking disabled and a 120-second local timeout.
+
+### Security
+
+- Fail closed when a frozen profile is missing, disabled, changed, unconfigured, or no longer exposes its model; never fall back to another account.
+- Keep provider destinations in the code-owned adapter registry. Arbitrary custom endpoints remain unsupported.
+- Changing a Kimi API region advances the profile revision and clears its cached models, selection, and consent before the new destination can be used.
 
 ## 0.1.5 - 2026-08-15
 

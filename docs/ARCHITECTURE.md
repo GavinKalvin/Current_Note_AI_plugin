@@ -35,7 +35,7 @@ Apply and Revert have two side effects: the editor transaction and persistence o
 
 - Each stable-ID profile has its own API key reference, connection test, model catalog, revision, and destination-specific consent. API keys live in Obsidian SecretStorage; plugin `data.json` stores only secret identifiers.
 - Discussion and edit requests freeze `{profileId, profileRevision, providerId, modelId}`. Continue and edit retry reuse that target and fail closed if it changed; they never read the current selector as fallback.
-- Profiles use a code-owned DeepSeek/Kimi adapter registry with fixed HTTPS destinations. Arbitrary base URLs and user-defined headers are not accepted.
+- Profiles use a code-owned DeepSeek/Kimi adapter registry with reviewed HTTPS destination presets. Kimi profiles explicitly choose China or International; arbitrary base URLs, automatic cross-region key retries, and user-defined headers are not accepted.
 - Legacy settings migrate to deterministic DeepSeek/Kimi profiles. Legacy shadow fields and a one-time `data.v0.1.6.rollback.json` snapshot preserve the pre-upgrade rollback boundary.
 - `data.json` also stores non-secret settings and up to 50 locally named conversations, with at most 200 persisted user/assistant messages per conversation.
 - Persisted history is bounded to 5 MiB per conversation and 20 MiB overall; individual conversations or all history can be deleted. Note rename updates the bound path and associated history.

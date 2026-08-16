@@ -5,9 +5,9 @@ Current Note AI intentionally has no model-callable tools, filesystem commands, 
 ## Secret handling
 
 - The plugin stores only an Obsidian SecretStorage identifier in plugin settings.
-- Each account profile stores a separate SecretStorage reference. Its API key is resolved only for that request and injected into the fixed DeepSeek or Kimi HTTPS adapter.
+- Each account profile stores a separate SecretStorage reference. Its API key is resolved only for that request and injected into the selected code-owned DeepSeek or Kimi regional HTTPS adapter.
 - Settings cannot supply a base URL, redirect target, arbitrary header, or request template. Custom OpenAI-compatible endpoints are intentionally unsupported.
-- Consent and model catalogs are profile-scoped. Credential or enabled-state changes invalidate the profile revision, catalog, selection, and consent.
+- Consent and model catalogs are profile-scoped. Credential, enabled-state, or Kimi API-region changes invalidate the profile revision, catalog, selection, and consent. Keys are never silently retried against another region.
 - Request bodies, note text, responses, and secrets are not logged by the plugin.
 - SecretStorage reduces accidental plaintext persistence but does not protect against a malicious local process or another privileged plugin.
 

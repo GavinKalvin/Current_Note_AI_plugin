@@ -1,14 +1,19 @@
 # Current Note AI v0.1.6
 
-Current Note AI v0.1.6 adds Kimi alongside DeepSeek while preserving safe migration and rollback compatibility.
+> 本版本完成 Kimi 适配：支持独立 Kimi 账户档案、与 DeepSeek 并列选模，以及中国区/国际区 API 路由。
+
+Current Note AI v0.1.6 adapts the plugin to Kimi alongside DeepSeek while preserving safe migration and rollback compatibility.
 
 ## Highlights
 
 - DeepSeek and Kimi appear together in one model dropdown; there is no separate provider selector.
-- The first Kimi release supports only `kimi-k2.6` after `/models` verification. Each provider has its own API key and connection test.
-- Provider-level privacy consent covers cross-provider history disclosure, and each conversation message retains its provider/model source.
+- Settings support multiple independent DeepSeek and Kimi account profiles, each with its own SecretStorage reference, model catalog, connection test, enabled state, and consent.
+- The first Kimi release supports `kimi-k2.6` after `/models` verification.
+- Kimi profiles explicitly select the China (`https://api.moonshot.cn/v1`) or International (`https://api.moonshot.ai/v1`) API region. Existing unlabelled profiles migrate to China, fixing China-region keys that previously returned `Invalid Authentication` against the international endpoint.
+- API keys are never silently retried against another region. Changing region invalidates the old catalog, selection, profile revision, and consent.
+- Profile-scoped privacy consent covers cross-provider history disclosure, and each conversation message retains its profile/provider/model source.
 - Provider catalog refreshes do not block one another; failed refreshes keep the last successful catalog.
-- Legacy v0.1.5 DeepSeek settings migrate without loss and retain rollback-compatible shadow fields.
+- Legacy v0.1.5 settings migrate without loss and retain rollback-compatible shadow fields plus a one-time pre-upgrade settings snapshot.
 - Temperature applies only to DeepSeek. Kimi is non-streaming, disables thinking, and uses a 120-second local timeout.
 
 ## DeepSeek behavior
@@ -37,7 +42,7 @@ Minimum Obsidian version: 1.13.0. Desktop only.
 
 ## Validation
 
-- TypeScript type check and the repository test suite cover prompt boundaries, completion usage, continuation overlap, history migration, edit schema safety, keyboard shortcuts, persistence hardening, and Markdown rendering.
+- TypeScript type check and 97 repository tests cover Kimi region migration and isolation, provider profiles, prompt boundaries, completion usage, continuation overlap, history migration, edit schema safety, keyboard shortcuts, persistence hardening, and Markdown rendering.
 - Production bundle should be rebuilt and installed before release.
 
 See `README.md`, `CHANGELOG.md`, and `docs/ARCHITECTURE.md` for details.
