@@ -46,18 +46,15 @@ describe("schema-v3 provider profile migration", () => {
     expect(result.schemaVersion).toBe(3);
     expect(result.migrationVersion).toBe(3);
     expect(result.providerProfiles.slice(0, 2)).toMatchObject([
-      { id: "legacy-deepseek", providerId: "deepseek", secretId: "deepseek-secret-id" },
-      { id: "legacy-kimi", providerId: "kimi", secretId: "kimi-secret-id" },
+      { id: "legacy-deepseek", providerId: "deepseek", endpointId: "deepseek-official", secretId: "deepseek-secret-id" },
+      { id: "legacy-kimi", providerId: "kimi", endpointId: "kimi-cn", secretId: "kimi-secret-id" },
     ]);
     expect(result.providerProfiles[0]?.catalog.models).toEqual([{ id: "legacy-deepseek-model", contextWindowTokens: 64_000 }]);
     expect(result.providerProfiles[1]?.catalog.models).toEqual([{ id: "kimi-k2.6" }]);
     expect(result.selectedProfileModel).toEqual({ profileId: "legacy-kimi", modelId: "kimi-k2.6" });
-    expect(result.profileConsents["legacy-kimi"]).toEqual({
-      disclosureRevision: 2,
-      acceptedAt: 13,
-      profileRevision: 1,
-      providerId: "kimi",
-    });
+    // A legacy Kimi grant applied to the former implicit international
+    // destination and must not be reused for the China endpoint.
+    expect(result.profileConsents["legacy-kimi"]).toBeUndefined();
     expect(result.secretId).toBe("deepseek-secret-id");
     expect(result.kimiSecretId).toBe("kimi-secret-id");
   });
@@ -155,5 +152,74 @@ describe("schema-v3 provider profile migration", () => {
       ["deepseek-personal", "personal-secret-ref", "personal"],
     ]);
     expect(result.selectedProfileModel).toEqual({ profileId: "deepseek-personal", modelId: "shared-model" });
+  });
+
+  it("migrates an implicit v3 Kimi endpoint to China and invalidates stale identity state", () => {
+    const result = sanitizeSettings({
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [{
+        id: "legacy-kimi",
+        label: "Kimi",
+        providerId: "kimi",
+        secretId: "kimi-secret-ref",
+        enabled: true,
+        revision: 4,
+        catalog: { models: [{ id: "kimi-k2.6" }], lastSuccessfulRefreshAt: 99 },
+      }],
+      selectedProfileModel: { profileId: "legacy-kimi", modelId: "kimi-k2.6" },
+      profileConsents: {
+        "legacy-kimi": {
+          disclosureRevision: 1,
+          acceptedAt: 98,
+          profileRevision: 4,
+          providerId: "kimi",
+        },
+      },
+    }, DEFAULT_SETTINGS);
+
+    expect(result.providerProfiles[0]).toMatchObject({
+      id: "legacy-kimi",
+      endpointId: "kimi-cn",
+      revision: 5,
+      catalog: { models: [], lastSuccessfulRefreshAt: 0 },
+    });
+    expect(result.selectedProfileModel).toBeNull();
+    expect(result.profileConsents["legacy-kimi"]).toBeUndefined();
+  });
+
+  it("preserves an explicit international Kimi endpoint and rejects cross-provider endpoints", () => {
+    const global = sanitizeSettings({
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [{
+        id: "kimi-global",
+        label: "Kimi global",
+        providerId: "kimi",
+        endpointId: "kimi-global",
+        secretId: "global-secret-ref",
+        enabled: true,
+        revision: 2,
+        catalog: { models: [{ id: "kimi-k2.6" }], lastSuccessfulRefreshAt: 10 },
+      }],
+      selectedProfileModel: { profileId: "kimi-global", modelId: "kimi-k2.6" },
+    }, DEFAULT_SETTINGS);
+    expect(global.providerProfiles[0]).toMatchObject({
+      endpointId: "kimi-global",
+      revision: 2,
+      catalog: { models: [{ id: "kimi-k2.6" }], lastSuccessfulRefreshAt: 10 },
+    });
+    expect(global.selectedProfileModel).toEqual({ profileId: "kimi-global", modelId: "kimi-k2.6" });
+
+    const invalid = sanitizeSettings({
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [{
+        ...global.providerProfiles[0],
+        endpointId: "deepseek-official",
+      }],
+    }, DEFAULT_SETTINGS);
+    expect(invalid.providerProfiles[0]).toMatchObject({
+      endpointId: "kimi-cn",
+      revision: 3,
+      catalog: { models: [], lastSuccessfulRefreshAt: 0 },
+    });
   });
 });

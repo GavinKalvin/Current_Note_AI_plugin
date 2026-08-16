@@ -3,6 +3,7 @@ export type ProviderKind = "deepseek" | "kimi";
 // Kept as an alias for adapter and v0.1.6 history compatibility.
 export type ProviderId = ProviderKind;
 export type ProfileId = string;
+export type ProviderEndpointId = "deepseek-official" | "kimi-cn" | "kimi-global";
 
 export interface ModelRef {
   providerId: ProviderId;
@@ -68,6 +69,7 @@ export interface ProviderProfile {
   id: ProfileId;
   label: string;
   providerId: ProviderId;
+  endpointId: ProviderEndpointId;
   secretId: string;
   enabled: boolean;
   revision: number;

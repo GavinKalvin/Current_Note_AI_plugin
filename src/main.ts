@@ -27,8 +27,10 @@ import type {
 } from "./types";
 import {
   createProfileId,
+  defaultEndpointId,
   findProfile,
   freezeTarget,
+  getProviderEndpoint,
   LEGACY_DEEPSEEK_PROFILE_ID,
   LEGACY_KIMI_PROFILE_ID,
   MAX_PROVIDER_PROFILES,
@@ -139,10 +141,6 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     availableModels: [...DEFAULT_SETTINGS.availableModels],
     conversationHistory: [],
   };
-  private readonly providers: Record<ProviderId, ProviderAdapter> = {
-    deepseek: getProviderRegistration("deepseek").createAdapter(),
-    kimi: getProviderRegistration("kimi").createAdapter(),
-  };
   readonly documentGate = new CurrentDocumentGate(this.app);
   private readonly saveCoordinator = new RevisionedSaveCoordinator<CurrentNoteAiSettings>({
     getSnapshot: () => cloneSettings(this.settings),
@@ -249,7 +247,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     if (!profile.secretId) {
       throw new ProfileRoutingError(
         "missing-secret",
-        `Choose a ${this.providers[profile.providerId].displayName} API key secret for ${profile.label}.`,
+        `Choose a ${getProviderRegistration(profile.providerId).displayName} API key secret for ${profile.label}.`,
         profile.id,
       );
     }
@@ -257,7 +255,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     if (!apiKey) {
       throw new ProfileRoutingError(
         "missing-secret",
-        `The selected ${this.providers[profile.providerId].displayName} API key secret for ${profile.label} is empty or unavailable.`,
+        `The selected ${getProviderRegistration(profile.providerId).displayName} API key secret for ${profile.label} is empty or unavailable.`,
         profile.id,
       );
     }
@@ -274,6 +272,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
       id,
       label: nextProfileLabel(this.settings.providerProfiles, providerId),
       providerId,
+      endpointId: defaultEndpointId(providerId),
       secretId: "",
       enabled: true,
       revision: 1,
@@ -287,7 +286,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
 
   async updateProfile(
     profileId: string,
-    changes: Partial<Pick<ProviderProfile, "label" | "secretId" | "enabled">>,
+    changes: Partial<Pick<ProviderProfile, "label" | "secretId" | "enabled" | "endpointId">>,
   ): Promise<void> {
     const profile = this.requireProfile(profileId);
     const label = changes.label === undefined ? profile.label : changes.label.trim();
@@ -297,16 +296,21 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     if (changes.enabled !== undefined && typeof changes.enabled !== "boolean") {
       throw new Error("Profile enabled must be a boolean.");
     }
+    const endpointId = changes.endpointId ?? profile.endpointId;
+    getProviderEndpoint(profile.providerId, endpointId);
     const changed = label !== profile.label
       || secretId !== profile.secretId
+      || endpointId !== profile.endpointId
       || (changes.enabled !== undefined && changes.enabled !== profile.enabled);
     if (!changed) return;
     const identityChanged = secretId !== profile.secretId
+      || endpointId !== profile.endpointId
       || (changes.enabled !== undefined && changes.enabled !== profile.enabled);
     const next = {
       ...profile,
       label,
       secretId,
+      endpointId,
       ...(changes.enabled === undefined ? {} : { enabled: changes.enabled }),
       revision: identityChanged ? profile.revision + 1 : profile.revision,
       catalog: identityChanged
@@ -368,7 +372,8 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     if (!descriptor || (profile.providerId === "kimi" && target.modelId !== KIMI_SUPPORTED_MODEL)) {
       throw new ProfileRoutingError("unknown-model", `Model ${target.modelId} is not in the last successful model list for ${profile.label}.`, profile.id);
     }
-    const adapter = this.providers[profile.providerId];
+    const endpoint = getProviderEndpoint(profile.providerId, profile.endpointId);
+    const adapter = getProviderRegistration(profile.providerId).createAdapter(endpoint.baseUrl);
     const remoteContext = descriptor.contextWindowTokens;
     const contextWindowTokens = profile.providerId === "kimi"
       ? Math.min(remoteContext ?? KIMI_CONTEXT_WINDOW_TOKENS, KIMI_CONTEXT_WINDOW_TOKENS)
@@ -381,7 +386,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
       model: { providerId: profile.providerId, modelId: target.modelId },
       adapter,
       displayName: adapter.displayName,
-      destination: getProviderRegistration(profile.providerId).baseUrl,
+      destination: endpoint.baseUrl,
       contextWindowTokens,
     };
   }
@@ -424,10 +429,11 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     return result.models;
   }
 
-  private requireProvider(providerId: ProviderId): ProviderAdapter {
-    const adapter = this.providers[providerId];
-    if (!adapter) throw new ProfileRoutingError("invalid-selection", "Choose a recognized AI provider.");
-    return adapter;
+  private requireProvider(providerId: ProviderId): void {
+    if (providerId !== "deepseek" && providerId !== "kimi") {
+      throw new ProfileRoutingError("invalid-selection", "Choose a recognized AI provider.");
+    }
+    getProviderRegistration(providerId);
   }
 
   private requireProfile(profileId: string): ProviderProfile {
@@ -541,7 +547,8 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
   private async refreshProvider(profileId: string): Promise<ProviderRefreshResult> {
     const profile = this.requireProfile(profileId);
     const providerId = profile.providerId;
-    const adapter = this.providers[providerId];
+    const endpoint = getProviderEndpoint(providerId, profile.endpointId);
+    const adapter = getProviderRegistration(providerId).createAdapter(endpoint.baseUrl);
     if (!profile.enabled) {
       return {
         profileId: profile.id, providerId, displayName: adapter.displayName, status: "skipped",

@@ -11,6 +11,7 @@ import type {
   ProfileConsentGrant,
   ProfileModelRef,
   ProviderConsentGrant,
+  ProviderEndpointId,
   ProviderId,
   ProviderModelCatalog,
   ProviderProfile,
@@ -20,6 +21,8 @@ import {
   LEGACY_DEEPSEEK_PROFILE_ID,
   LEGACY_KIMI_PROFILE_ID,
   PROVIDER_PRESETS,
+  PROVIDER_ENDPOINTS,
+  getProviderEndpoint,
 } from "./core/provider-profiles";
 
 export interface CurrentNoteAiSettings {
@@ -52,6 +55,7 @@ export const DEFAULT_SETTINGS: CurrentNoteAiSettings = {
       id: LEGACY_DEEPSEEK_PROFILE_ID,
       label: "DeepSeek",
       providerId: "deepseek",
+      endpointId: "deepseek-official",
       secretId: "",
       enabled: true,
       revision: 1,
@@ -67,6 +71,7 @@ export const DEFAULT_SETTINGS: CurrentNoteAiSettings = {
       id: LEGACY_KIMI_PROFILE_ID,
       label: "Kimi",
       providerId: "kimi",
+      endpointId: "kimi-cn",
       secretId: "",
       enabled: true,
       revision: 1,
@@ -112,7 +117,7 @@ export interface SettingsHost {
   addProfile(providerId: ProviderId): Promise<string>;
   updateProfile(
     profileId: string,
-    changes: Partial<Pick<ProviderProfile, "label" | "secretId" | "enabled">>,
+    changes: Partial<Pick<ProviderProfile, "label" | "secretId" | "enabled" | "endpointId">>,
   ): Promise<void>;
   deleteProfile(profileId: string): Promise<void>;
   moveProfile(profileId: string, direction: -1 | 1): Promise<void>;
@@ -146,7 +151,7 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
       .setName("Provider profiles")
       .setHeading();
     containerEl.createEl("p", {
-      text: "Each profile keeps its own secret, model catalog, consent, and request history identity. API destinations are fixed by provider.",
+      text: "Each profile keeps its own secret, model catalog, consent, and request history identity. API destinations use reviewed provider presets.",
     });
     const addActions = containerEl.createDiv({ cls: "current-note-ai-profile-add-actions" });
     for (const providerId of ["deepseek", "kimi"] as const) {
@@ -223,11 +228,31 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
 
   private renderProfileCard(container: HTMLElement, profile: ProviderProfile, index: number): void {
     const preset = PROVIDER_PRESETS[profile.providerId];
+    const endpoint = getProviderEndpoint(profile.providerId, profile.endpointId);
     const card = container.createDiv({ cls: "current-note-ai-profile-card" });
     new Setting(card).setName(`${profile.label} · ${preset.displayName}`).setHeading();
     new Setting(card)
       .setName("Destination")
-      .setDesc(`${preset.displayName} requests use ${preset.baseUrl}. This destination is fixed.`);
+      .setDesc(`${preset.displayName} requests use ${endpoint.baseUrl}.`);
+    if (profile.providerId === "kimi") {
+      new Setting(card)
+        .setName("API region")
+        .setDesc("Choose the region where this API key was created. Keys are not retried against another region.")
+        .addDropdown((dropdown) => {
+          for (const endpointId of preset.endpointIds) {
+            const candidate = PROVIDER_ENDPOINTS[endpointId];
+            dropdown.addOption(candidate.id, `${candidate.displayName} · ${candidate.baseUrl}`);
+          }
+          dropdown
+            .setValue(profile.endpointId)
+            .onChange((value) => {
+              void this.runProfileAction(async () => {
+                await this.host.updateProfile(profile.id, { endpointId: value as ProviderEndpointId });
+                this.display();
+              });
+            });
+        });
+    }
     new Setting(card)
       .setName("Profile label")
       .addText((text) => text

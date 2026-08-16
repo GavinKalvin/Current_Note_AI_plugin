@@ -2,6 +2,7 @@ import type {
   FrozenRequestTarget,
   ProfileModelRef,
   ProviderId,
+  ProviderEndpointId,
   ProviderProfile,
 } from "../types";
 
@@ -12,21 +13,70 @@ export const MAX_PROVIDER_PROFILES = 32;
 export interface ProviderPreset {
   providerId: ProviderId;
   displayName: string;
+  defaultEndpointId: ProviderEndpointId;
+  endpointIds: readonly ProviderEndpointId[];
+}
+
+export interface ProviderEndpointPreset {
+  id: ProviderEndpointId;
+  providerId: ProviderId;
+  displayName: string;
   baseUrl: string;
 }
+
+export const PROVIDER_ENDPOINTS: Record<ProviderEndpointId, ProviderEndpointPreset> = {
+  "deepseek-official": {
+    id: "deepseek-official",
+    providerId: "deepseek",
+    displayName: "Official",
+    baseUrl: "https://api.deepseek.com",
+  },
+  "kimi-cn": {
+    id: "kimi-cn",
+    providerId: "kimi",
+    displayName: "China",
+    baseUrl: "https://api.moonshot.cn/v1",
+  },
+  "kimi-global": {
+    id: "kimi-global",
+    providerId: "kimi",
+    displayName: "International",
+    baseUrl: "https://api.moonshot.ai/v1",
+  },
+};
 
 export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
   deepseek: {
     providerId: "deepseek",
     displayName: "DeepSeek",
-    baseUrl: "https://api.deepseek.com",
+    defaultEndpointId: "deepseek-official",
+    endpointIds: ["deepseek-official"],
   },
   kimi: {
     providerId: "kimi",
     displayName: "Kimi",
-    baseUrl: "https://api.moonshot.ai/v1",
+    // Existing Kimi profiles predate region selection. The China endpoint is
+    // the safe migration default for this Chinese-language plugin install;
+    // international accounts remain explicitly selectable in Settings.
+    defaultEndpointId: "kimi-cn",
+    endpointIds: ["kimi-cn", "kimi-global"],
   },
 };
+
+export function getProviderEndpoint(
+  providerId: ProviderId,
+  endpointId: ProviderEndpointId,
+): ProviderEndpointPreset {
+  const endpoint = PROVIDER_ENDPOINTS[endpointId];
+  if (!endpoint || endpoint.providerId !== providerId) {
+    throw new Error(`Endpoint ${endpointId} does not belong to ${providerId}.`);
+  }
+  return endpoint;
+}
+
+export function defaultEndpointId(providerId: ProviderId): ProviderEndpointId {
+  return PROVIDER_PRESETS[providerId].defaultEndpointId;
+}
 
 export function findProfile(
   profiles: readonly ProviderProfile[],

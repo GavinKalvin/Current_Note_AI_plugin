@@ -4,6 +4,7 @@ import type {
   ProfileConsentGrant,
   ProfileModelRef,
   ProviderConsentGrant,
+  ProviderEndpointId,
   ProviderId,
   ProviderModel,
   ProviderModelCatalog,
@@ -13,6 +14,8 @@ import {
   LEGACY_DEEPSEEK_PROFILE_ID,
   LEGACY_KIMI_PROFILE_ID,
   MAX_PROVIDER_PROFILES,
+  PROVIDER_ENDPOINTS,
+  defaultEndpointId,
 } from "./provider-profiles";
 import { sanitizeConversationHistory } from "./conversation-history";
 
@@ -90,6 +93,17 @@ function positiveInteger(value: unknown, maximum: number): number | undefined {
 
 function providerId(value: unknown): ProviderId | undefined {
   return value === "deepseek" || value === "kimi" ? value : undefined;
+}
+
+function providerEndpointId(value: unknown, provider: ProviderId): ProviderEndpointId {
+  if (typeof value !== "string") return defaultEndpointId(provider);
+  const endpoint = PROVIDER_ENDPOINTS[value as ProviderEndpointId];
+  return endpoint?.providerId === provider ? endpoint.id : defaultEndpointId(provider);
+}
+
+function hasValidProviderEndpoint(value: unknown, provider: ProviderId): boolean {
+  if (typeof value !== "string") return false;
+  return PROVIDER_ENDPOINTS[value as ProviderEndpointId]?.providerId === provider;
 }
 
 function sanitizeProviderModel(value: unknown): ProviderModel | undefined {
@@ -206,17 +220,29 @@ function sanitizeProfile(
   const profileLabel = label(saved.label);
   const provider = providerId(saved.providerId);
   if (!id || !profileLabel || !provider) return undefined;
+  const savedRevision = positiveInteger(saved.revision, MAX_PROFILE_REVISION) ?? 1;
+  // v3 Kimi profiles were implicitly routed to the international endpoint.
+  // Missing endpoint metadata therefore represents an identity change when
+  // migrating them to the explicit China default. Invalidate cached models,
+  // selection, and consent by advancing the profile revision.
+  const endpointIdentityChanged = !hasValidProviderEndpoint(saved.endpointId, provider)
+    && (provider === "kimi" || saved.endpointId !== undefined);
 
   return {
     id,
     label: profileLabel,
     providerId: provider,
+    endpointId: providerEndpointId(saved.endpointId, provider),
     // This is a vault-secret reference, never an API-key value. Unknown secret
     // fields are intentionally ignored by this sanitizer.
     secretId: boundedString(saved.secretId, "", MAX_SECRET_ID_LENGTH),
     enabled: typeof saved.enabled === "boolean" ? saved.enabled : true,
-    revision: positiveInteger(saved.revision, MAX_PROFILE_REVISION) ?? 1,
-    catalog: cloneCatalog(sanitizeCatalog(saved.catalog) ?? fallbackCatalogs[provider]),
+    revision: endpointIdentityChanged
+      ? Math.min(MAX_PROFILE_REVISION, savedRevision + 1)
+      : savedRevision,
+    catalog: endpointIdentityChanged
+      ? emptyCatalog()
+      : cloneCatalog(sanitizeCatalog(saved.catalog) ?? fallbackCatalogs[provider]),
   };
 }
 
@@ -231,6 +257,7 @@ function legacyProfile(
     id,
     label: profileLabel,
     providerId: provider,
+    endpointId: defaultEndpointId(provider),
     secretId,
     enabled: true,
     revision: 1,
@@ -243,7 +270,9 @@ function sanitizeProfileModel(value: unknown, profiles: readonly ProviderProfile
   const saved = asRecord(value);
   const id = profileId(saved.profileId);
   const model = modelId(saved.modelId);
-  if (!id || !model || !profiles.some((profile) => profile.id === id)) return undefined;
+  if (!id || !model || !profiles.some((profile) => profile.id === id
+    && profile.enabled
+    && profile.catalog.models.some((candidate) => candidate.id === model))) return undefined;
   return { profileId: id, modelId: model };
 }
 
@@ -364,7 +393,9 @@ export function sanitizeSettings(value: unknown, defaults: CurrentNoteAiSettings
       continue;
     }
     const legacyConsent = providerConsents[profile.providerId];
-    if (profile.id === legacyProfileIdFor(profile.providerId) && legacyConsent) {
+    if (profile.providerId === "deepseek"
+      && profile.id === legacyProfileIdFor(profile.providerId)
+      && legacyConsent) {
       profileConsents[profile.id] = {
         ...legacyConsent,
         profileRevision: profile.revision,

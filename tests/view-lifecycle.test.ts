@@ -40,11 +40,11 @@ function createView(options: {
   const selectedModel = options.selectedModel ?? { providerId: "deepseek", modelId: "deepseek-v4-flash" };
   const profiles: ProviderProfile[] = [
     {
-      id: "legacy-deepseek", label: "DeepSeek", providerId: "deepseek", secretId: "deepseek-secret", enabled: true, revision: 1,
+      id: "legacy-deepseek", label: "DeepSeek", providerId: "deepseek", endpointId: "deepseek-official", secretId: "deepseek-secret", enabled: true, revision: 1,
       catalog: { models: [{ id: "deepseek-v4-flash", contextWindowTokens: 64_000 }], lastSuccessfulRefreshAt: 1 },
     },
     {
-      id: "legacy-kimi", label: "Kimi", providerId: "kimi", secretId: "kimi-secret", enabled: true, revision: 1,
+      id: "legacy-kimi", label: "Kimi", providerId: "kimi", endpointId: "kimi-cn", secretId: "kimi-secret", enabled: true, revision: 1,
       catalog: { models: [{ id: "kimi-k2.6", contextWindowTokens: 256_000 }], lastSuccessfulRefreshAt: 1 },
     },
   ];
@@ -123,7 +123,7 @@ function createView(options: {
         model: { providerId: profile.providerId, modelId },
         adapter,
         displayName: adapter.displayName,
-        destination: profile.providerId === "kimi" ? "https://api.moonshot.ai/v1" : "https://api.deepseek.com",
+        destination: profile.providerId === "kimi" ? "https://api.moonshot.cn/v1" : "https://api.deepseek.com",
         contextWindowTokens: profile.providerId === "kimi" ? 256_000 : 64_000,
       };
     }),
