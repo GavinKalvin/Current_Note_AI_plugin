@@ -103,6 +103,7 @@
 
 .current-note-ai-model-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   min-width: 0;
@@ -127,6 +128,30 @@
   padding-block: 0;
   font-size: var(--font-ui-smaller);
   text-overflow: ellipsis;
+}
+
+.current-note-ai-option-select {
+  min-width: 0;
+  max-width: 100%;
+  height: 26px;
+  padding-block: 0;
+  font-size: var(--font-ui-smaller);
+  text-overflow: ellipsis;
+}
+
+.current-note-ai-model-bar > a {
+  flex: 1 0 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--font-ui-smaller);
+}
+
+.current-note-ai-model-access-hint {
+  flex: 1 0 100%;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
 }
 
 .current-note-ai-model-refresh {
@@ -443,6 +468,7 @@
 
 .current-note-ai-message-group {
   display: flex;
+  min-width: 0;
   max-width: min(86%, 680px);
   flex-direction: column;
   align-items: flex-start;
@@ -462,6 +488,84 @@
   line-height: 1.55;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* Obsidian's UI defaults body to user-select:none (including sidebars).
+   Restore native selection for messages and all of their formatted children. */
+.current-note-ai-view .current-note-ai-bubble,
+.current-note-ai-view .current-note-ai-bubble *,
+.current-note-ai-view textarea {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.current-note-ai-message-provenance {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 3px 9px;
+  max-width: calc(100% - 8px);
+  margin: 0 4px 5px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.current-note-ai-message-model,
+.current-note-ai-message-reasoning {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.current-note-ai-message-model {
+  font-weight: var(--font-medium, 500);
+}
+
+.current-note-ai-message-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 3px 8px;
+  width: 100%;
+  max-width: 100%;
+  margin-top: 5px;
+  padding-inline: 4px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+}
+
+.current-note-ai-message-time {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+.current-note-ai-message-actions {
+  display: flex;
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+}
+
+.current-note-ai-view .current-note-ai-copy-button {
+  height: 24px;
+  padding: 2px 7px;
+  border-radius: var(--radius-s);
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.current-note-ai-view .current-note-ai-copy-button:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
 }
 
 .current-note-ai-message-row.is-user .current-note-ai-bubble {
@@ -502,6 +606,28 @@
 
 .current-note-ai-markdown {
   white-space: normal;
+}
+
+.current-note-ai-markdown strong,
+.current-note-ai-markdown b {
+  font-weight: var(--font-bold, 700);
+}
+
+.current-note-ai-markdown em {
+  font-style: italic;
+}
+
+.current-note-ai-markdown .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-block: 0.25em;
+}
+
+.current-note-ai-markdown .current-note-ai-math-fallback {
+  white-space: pre-wrap;
+  font-family: var(--font-monospace);
+  font-size: 0.95em;
 }
 
 .current-note-ai-markdown > :first-child {
@@ -589,6 +715,11 @@
 
 .current-note-ai-markdown a {
   color: var(--text-accent);
+}
+
+.current-note-ai-message-row.is-user .current-note-ai-markdown a,
+.current-note-ai-message-row.is-user .current-note-ai-markdown blockquote {
+  color: inherit;
 }
 
 .current-note-ai-image-placeholder {

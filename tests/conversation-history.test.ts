@@ -144,6 +144,70 @@ describe("conversation history persistence", () => {
     expect(result?.messages[0]).not.toHaveProperty("modelId");
   });
 
+  it("round-trips message origin, reasoning, and createdAt without backfilling legacy history", () => {
+    const saved = conversation("metadata", 1_735_689_600_123);
+    saved.messages = [{
+      id: "assistant-metadata",
+      role: "assistant",
+      content: "Answer body",
+      createdAt: 1_735_689_600_123,
+      origin: "ai",
+      providerId: "chatgpt",
+      modelId: "gpt-6.1-sol",
+      reasoning: "xhigh",
+    } as SavedConversation["messages"][number]];
+    const legacy = conversation("no-metadata", 1_735_689_600_124);
+
+    const sanitized = sanitizeConversationHistory(JSON.parse(JSON.stringify([saved, legacy])) as unknown);
+    const byId = new Map(sanitized.map((item) => [item.id, item.messages[0]]));
+    expect(byId.get("metadata")).toMatchObject({
+      id: "assistant-metadata",
+      content: "Answer body",
+      createdAt: 1_735_689_600_123,
+      origin: "ai",
+      providerId: "chatgpt",
+      modelId: "gpt-6.1-sol",
+      reasoning: "xhigh",
+    });
+    expect(byId.get("no-metadata")).not.toHaveProperty("reasoning");
+
+    const roundTripped = sanitizeConversationHistory(
+      JSON.parse(JSON.stringify(upsertConversationHistory([], sanitized.find((item) => item.id === "metadata")!))) as unknown,
+    );
+    expect(roundTripped[0]?.messages[0]).toMatchObject({ createdAt: 1_735_689_600_123, reasoning: "xhigh" });
+  });
+
+  it("drops invalid origin and reasoning fields while retaining the message", () => {
+    const saved = conversation("invalid-message-metadata", 20);
+    saved.messages[0] = {
+      ...saved.messages[0]!,
+      content: "Still here",
+      origin: "provider" as never,
+      reasoning: "turbo" as never,
+    } as SavedConversation["messages"][number];
+
+    const message = sanitizeConversationHistory([saved])[0]?.messages[0];
+    expect(message?.content).toBe("Still here");
+    expect(message).not.toHaveProperty("origin");
+    expect(message).not.toHaveProperty("reasoning");
+  });
+
+  it("preserves local message provenance without attaching an AI model or reasoning", () => {
+    const saved = conversation("local", 20);
+    saved.messages[0] = {
+      ...saved.messages[0]!,
+      role: "assistant",
+      content: "Applied locally",
+      origin: "local",
+    } as SavedConversation["messages"][number];
+
+    const message = sanitizeConversationHistory([saved])[0]?.messages[0];
+    expect(message).toMatchObject({ origin: "local", content: "Applied locally" });
+    expect(message).not.toHaveProperty("providerId");
+    expect(message).not.toHaveProperty("modelId");
+    expect(message).not.toHaveProperty("reasoning");
+  });
+
   it("backfills deterministic legacy targets only from explicit provider/model provenance", () => {
     const explicit = conversation("explicit-target", 10);
     explicit.messages[0] = {

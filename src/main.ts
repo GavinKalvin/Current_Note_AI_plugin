@@ -1,5 +1,6 @@
 import { MarkdownView, normalizePath, Notice, Plugin, TFile } from "obsidian";
 import { CurrentDocumentGate } from "./context";
+import { includeChatGptSolModel } from "./core/chatgpt-options";
 import {
   renameConversationHistoryNote,
   upsertConversationHistory,
@@ -8,6 +9,9 @@ import { RevisionedSaveCoordinator } from "./core/persistence";
 import { sanitizeSettings } from "./core/settings-sanitization";
 import { ProfileRoutingError, ProviderRequestError } from "./provider/errors";
 import { getProviderRegistration } from "./provider/registry";
+import { getChatGptAccountInfo, signOutChatGpt as revokeChatGpt } from "./provider/chatgpt-auth";
+import { ChatGptPlanWelcomeModal, ManualChatGptSignInModal } from "./modals";
+import { KIMI_CODE_CONTEXT_TOKENS, KIMI_CODE_MODEL } from "./provider/kimi-code";
 import {
   CurrentNoteAiSettingTab,
   DEFAULT_SETTINGS,
@@ -24,6 +28,8 @@ import type {
   ProviderId,
   ProviderModel,
   SavedConversation,
+  ChatGptReasoningEffort,
+  ChatGptServiceTier,
 } from "./types";
 import {
   createProfileId,
@@ -33,6 +39,7 @@ import {
   getProviderEndpoint,
   LEGACY_DEEPSEEK_PROFILE_ID,
   LEGACY_KIMI_PROFILE_ID,
+  KIMI_CODE_PROFILE_ID,
   MAX_PROVIDER_PROFILES,
   nextProfileLabel,
 } from "./core/provider-profiles";
@@ -40,7 +47,20 @@ import {
 const KIMI_SUPPORTED_MODEL = "kimi-k2.6";
 const KIMI_CONTEXT_WINDOW_TOKENS = 256_000;
 const DEEPSEEK_FALLBACK_CONTEXT_WINDOW_TOKENS = 64_000;
+const CHATGPT_FALLBACK_CONTEXT_WINDOW_TOKENS = 32_000;
 const LEGACY_ROLLBACK_FILE = "data.v0.1.6.rollback.json";
+
+function createChatGptAccountId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+    bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+    const hex = [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+  throw new Error("Secure random number generation is unavailable.");
+}
 
 export interface ProviderRequestContext {
   profile: ProviderProfile;
@@ -146,9 +166,48 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     getSnapshot: () => cloneSettings(this.settings),
     writeSnapshot: (snapshot) => this.saveData(snapshot),
   });
+  private readonly chatGptSignInModals = new Map<string, ManualChatGptSignInModal>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    if (!this.settings.kimiCodeProfileAdded) {
+      if (!this.settings.providerProfiles.some((profile) => profile.providerId === "kimi-code")
+        && this.settings.providerProfiles.length < MAX_PROVIDER_PROFILES) {
+        this.settings.providerProfiles.push({
+          id: this.settings.providerProfiles.some((profile) => profile.id === KIMI_CODE_PROFILE_ID)
+            ? createProfileId(new Set(this.settings.providerProfiles.map((profile) => profile.id))) : KIMI_CODE_PROFILE_ID,
+          label: "Kimi Code · Local quota", providerId: "kimi-code",
+          endpointId: "kimi-code-local", secretId: "", cliPath: "", enabled: true, revision: 1,
+          catalog: { models: [{ id: KIMI_CODE_MODEL, contextWindowTokens: KIMI_CODE_CONTEXT_TOKENS }], lastSuccessfulRefreshAt: 0 },
+        });
+      }
+      this.settings.kimiCodeProfileAdded = true;
+      await this.saveSettings();
+    }
+    if (!this.settings.chatgptProfileAdded) {
+      if (!this.settings.providerProfiles.some((profile) => profile.providerId === "chatgpt")
+        && this.settings.providerProfiles.length < MAX_PROVIDER_PROFILES) {
+        this.settings.providerProfiles.push({
+          id: createProfileId(new Set(this.settings.providerProfiles.map((profile) => profile.id))),
+          label: "ChatGPT · Plan quota", providerId: "chatgpt", endpointId: "chatgpt-plan",
+          secretId: "", chatgptAccountId: createChatGptAccountId(), enabled: true, revision: 1,
+          chatgptReasoningEffort: "auto", chatgptSpeed: "standard",
+          catalog: { models: [], lastSuccessfulRefreshAt: 0 },
+        });
+      }
+      this.settings.chatgptProfileAdded = true;
+      await this.saveSettings();
+    }
+    let addedSol = false;
+    for (const profile of this.settings.providerProfiles) {
+      if (profile.providerId !== "chatgpt") continue;
+      const models = includeChatGptSolModel(profile.catalog.models);
+      if (models.length !== profile.catalog.models.length) {
+        profile.catalog = { ...profile.catalog, models };
+        addedSol = true;
+      }
+    }
+    if (addedSol) await this.saveSettings();
 
     this.registerView(
       CURRENT_NOTE_AI_VIEW,
@@ -194,6 +253,8 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
   }
 
   onunload(): void {
+    for (const modal of this.chatGptSignInModals.values()) modal.close();
+    this.chatGptSignInModals.clear();
     if (this.saveCoordinator.isDirty) {
       void this.saveCoordinator.flush().catch((error: unknown) => {
         new Notice(error instanceof Error
@@ -244,6 +305,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
 
   getApiKey(profileId: string): string {
     const profile = this.requireEnabledProfile(profileId);
+    if (profile.providerId === "kimi-code" || profile.providerId === "chatgpt") return "";
     if (!profile.secretId) {
       throw new ProfileRoutingError(
         "missing-secret",
@@ -274,9 +336,12 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
       providerId,
       endpointId: defaultEndpointId(providerId),
       secretId: "",
+      ...(providerId === "kimi-code" ? { cliPath: "" } : {}),
+      ...(providerId === "chatgpt" ? { chatgptAccountId: createChatGptAccountId() } : {}),
+      ...(providerId === "chatgpt" ? { chatgptReasoningEffort: "auto" as const, chatgptSpeed: "standard" as const } : {}),
       enabled: true,
       revision: 1,
-      catalog: { models: [], lastSuccessfulRefreshAt: 0 },
+      catalog: { models: providerId === "kimi-code" ? [{ id: KIMI_CODE_MODEL, contextWindowTokens: KIMI_CODE_CONTEXT_TOKENS }] : [], lastSuccessfulRefreshAt: 0 },
     };
     this.settings.providerProfiles = [...this.settings.providerProfiles, profile];
     await this.saveSettings();
@@ -286,11 +351,13 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
 
   async updateProfile(
     profileId: string,
-    changes: Partial<Pick<ProviderProfile, "label" | "secretId" | "enabled" | "endpointId">>,
+    changes: Partial<Pick<ProviderProfile, "label" | "secretId" | "enabled" | "endpointId" | "cliPath">>,
   ): Promise<void> {
     const profile = this.requireProfile(profileId);
     const label = changes.label === undefined ? profile.label : changes.label.trim();
-    const secretId = changes.secretId === undefined ? profile.secretId : changes.secretId.trim();
+    const secretId = profile.providerId === "kimi-code" || profile.providerId === "chatgpt" ? "" : changes.secretId === undefined ? profile.secretId : changes.secretId.trim();
+    const cliPath = profile.providerId === "kimi-code" ? (changes.cliPath ?? profile.cliPath ?? "").trim() : undefined;
+    if (cliPath !== undefined && (cliPath.length > 2_000 || /[\0\r\n]/u.test(cliPath))) throw new Error("Choose a valid absolute Kimi Code executable path.");
     if (!label || label.length > 200) throw new Error("Choose a profile label between 1 and 200 characters.");
     if (secretId.length > 500) throw new Error("Choose a valid vault secret reference.");
     if (changes.enabled !== undefined && typeof changes.enabled !== "boolean") {
@@ -301,16 +368,19 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     const changed = label !== profile.label
       || secretId !== profile.secretId
       || endpointId !== profile.endpointId
+      || cliPath !== profile.cliPath
       || (changes.enabled !== undefined && changes.enabled !== profile.enabled);
     if (!changed) return;
     const identityChanged = secretId !== profile.secretId
       || endpointId !== profile.endpointId
+      || cliPath !== profile.cliPath
       || (changes.enabled !== undefined && changes.enabled !== profile.enabled);
     const next = {
       ...profile,
       label,
       secretId,
       endpointId,
+      ...(cliPath === undefined ? {} : { cliPath }),
       ...(changes.enabled === undefined ? {} : { enabled: changes.enabled }),
       revision: identityChanged ? profile.revision + 1 : profile.revision,
       catalog: identityChanged
@@ -329,6 +399,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
 
   async deleteProfile(profileId: string): Promise<void> {
     this.requireProfile(profileId);
+    this.chatGptSignInModals.get(profileId)?.close();
     this.settings.providerProfiles = this.settings.providerProfiles.filter((profile) => profile.id !== profileId);
     delete this.settings.profileConsents[profileId];
     if (this.settings.selectedProfileModel?.profileId === profileId) this.settings.selectedProfileModel = null;
@@ -357,6 +428,74 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     this.notifyOpenViews();
   }
 
+  async signInChatGpt(profileId: string): Promise<void> {
+    const profile = this.requireProfile(profileId);
+    if (profile.providerId !== "chatgpt") throw new Error("This is not a ChatGPT plan profile.");
+    if (this.chatGptSignInModals.has(profileId)) throw new Error("ChatGPT sign-in is already in progress for this profile.");
+    const accountId = profile.chatgptAccountId ?? createChatGptAccountId();
+    profile.chatgptAccountId = accountId;
+    await this.saveSettings();
+    await new Promise<void>((resolve, reject) => {
+      const modal = new ManualChatGptSignInModal(this.app, accountId, (result) => {
+        if (result.firstSignIn) new ChatGptPlanWelcomeModal(this.app).open();
+        void (async () => {
+          const verified = await getChatGptAccountInfo(accountId);
+          if (!verified.signedIn) throw new Error("ChatGPT sign-in could not be verified.");
+          const refresh = await this.refreshProvider(profile.id);
+          if (refresh.status !== "updated") throw new Error(refresh.error ?? "Could not refresh ChatGPT models.");
+          await this.saveSettings();
+          this.notifyOpenViews();
+          new Notice(result.firstSignIn ? "You’re using your ChatGPT plan. Models refreshed." : "ChatGPT plan connected. Models refreshed.");
+        })().then(resolve).catch(reject);
+      }, reject, () => resolve());
+      this.chatGptSignInModals.set(profileId, modal);
+      modal.open();
+    }).finally(() => this.chatGptSignInModals.delete(profileId));
+  }
+
+  async signOutChatGpt(profileId: string): Promise<void> {
+    const profile = this.requireProfile(profileId);
+    if (profile.providerId !== "chatgpt") throw new Error("This is not a ChatGPT plan profile.");
+    this.chatGptSignInModals.get(profileId)?.close();
+    profile.catalog = { models: [], lastSuccessfulRefreshAt: 0 };
+    profile.revision += 1;
+    delete this.settings.profileConsents[profile.id];
+    if (this.settings.selectedProfileModel?.profileId === profile.id) this.settings.selectedProfileModel = null;
+    this.updateLegacyShadows();
+    for (const leaf of this.app.workspace.getLeavesOfType(CURRENT_NOTE_AI_VIEW)) {
+      if (leaf.view instanceof CurrentNoteAiView) leaf.view.handleProfileSignedOut(profile.id);
+    }
+    let revoked = true;
+    if (profile.chatgptAccountId) {
+      try { ({ revoked } = await revokeChatGpt(profile.chatgptAccountId)); }
+      catch (error) {
+        await this.saveSettings();
+        this.notifyOpenViews();
+        new Notice("Could not clear local ChatGPT credentials. The profile was disconnected in the UI, but credentials may remain on this device.");
+        throw error;
+      }
+    }
+    await this.saveSettings();
+    this.notifyOpenViews();
+    new Notice(revoked ? "Signed out of ChatGPT." : "Signed out locally, but OpenAI could not revoke the session remotely.");
+  }
+
+  async updateChatGptOptions(
+    profileId: string,
+    options: { reasoningEffort: ChatGptReasoningEffort; speed: ChatGptServiceTier },
+  ): Promise<void> {
+    const profile = this.requireProfile(profileId);
+    if (profile.providerId !== "chatgpt") throw new Error("These options are available only for ChatGPT plan profiles.");
+    const validEfforts: ChatGptReasoningEffort[] = ["auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
+    if (!validEfforts.includes(options.reasoningEffort) || (options.speed !== "standard" && options.speed !== "fast")) {
+      throw new Error("Choose a supported ChatGPT reasoning effort and speed.");
+    }
+    profile.chatgptReasoningEffort = options.reasoningEffort;
+    profile.chatgptSpeed = options.speed;
+    await this.saveSettings();
+    this.notifyOpenViews();
+  }
+
   resolveRequestContext(
     model: ProfileModelRef | FrozenRequestTarget | ModelRef | null = this.settings.selectedProfileModel,
   ): ProviderRequestContext {
@@ -369,13 +508,14 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
       throw new ProfileRoutingError("revision-mismatch", `Profile ${profile.label} no longer matches the selected provider.`, profile.id);
     }
     const descriptor = profile.catalog.models.find((candidate) => candidate.id === target.modelId);
-    if (!descriptor || (profile.providerId === "kimi" && target.modelId !== KIMI_SUPPORTED_MODEL)) {
+    if (!descriptor || (profile.providerId === "kimi" && target.modelId !== KIMI_SUPPORTED_MODEL)
+      || (profile.providerId === "kimi-code" && target.modelId !== KIMI_CODE_MODEL)) {
       throw new ProfileRoutingError("unknown-model", `Model ${target.modelId} is not in the last successful model list for ${profile.label}.`, profile.id);
     }
     const endpoint = getProviderEndpoint(profile.providerId, profile.endpointId);
-    const adapter = getProviderRegistration(profile.providerId).createAdapter(endpoint.baseUrl);
+    const adapter = getProviderRegistration(profile.providerId).createAdapter(endpoint.baseUrl, profile.cliPath, profile.chatgptAccountId);
     const remoteContext = descriptor.contextWindowTokens;
-    const contextWindowTokens = profile.providerId === "kimi"
+    const contextWindowTokens = profile.providerId === "chatgpt" ? Math.min(remoteContext ?? CHATGPT_FALLBACK_CONTEXT_WINDOW_TOKENS, CHATGPT_FALLBACK_CONTEXT_WINDOW_TOKENS) : profile.providerId === "kimi-code" ? KIMI_CODE_CONTEXT_TOKENS : profile.providerId === "kimi"
       ? Math.min(remoteContext ?? KIMI_CONTEXT_WINDOW_TOKENS, KIMI_CONTEXT_WINDOW_TOKENS)
       : remoteContext ?? DEEPSEEK_FALLBACK_CONTEXT_WINDOW_TOKENS;
     const profileModel = { profileId: profile.id, modelId: target.modelId };
@@ -430,7 +570,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
   }
 
   private requireProvider(providerId: ProviderId): void {
-    if (providerId !== "deepseek" && providerId !== "kimi") {
+    if (providerId !== "deepseek" && providerId !== "kimi" && providerId !== "kimi-code" && providerId !== "chatgpt") {
       throw new ProfileRoutingError("invalid-selection", "Choose a recognized AI provider.");
     }
     getProviderRegistration(providerId);
@@ -478,12 +618,12 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     }
     // Compatibility for pre-profile request call sites: only the deterministic
     // legacy profile for that provider is eligible; no arbitrary fallback occurs.
-    if (model.providerId !== "deepseek" && model.providerId !== "kimi") {
+    if (model.providerId !== "deepseek" && model.providerId !== "kimi" && model.providerId !== "kimi-code" && model.providerId !== "chatgpt") {
       throw new ProfileRoutingError("invalid-selection", "Choose a recognized AI provider.");
     }
     const profileId = model.providerId === "deepseek"
       ? LEGACY_DEEPSEEK_PROFILE_ID
-      : LEGACY_KIMI_PROFILE_ID;
+      : model.providerId === "kimi" ? LEGACY_KIMI_PROFILE_ID : model.providerId === "kimi-code" ? KIMI_CODE_PROFILE_ID : "chatgpt-plan";
     const profile = this.requireProfile(profileId);
     return {
       profileId,
@@ -548,7 +688,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
     const profile = this.requireProfile(profileId);
     const providerId = profile.providerId;
     const endpoint = getProviderEndpoint(providerId, profile.endpointId);
-    const adapter = getProviderRegistration(providerId).createAdapter(endpoint.baseUrl);
+    const adapter = getProviderRegistration(providerId).createAdapter(endpoint.baseUrl, profile.cliPath, profile.chatgptAccountId);
     if (!profile.enabled) {
       return {
         profileId: profile.id, providerId, displayName: adapter.displayName, status: "skipped",
@@ -575,7 +715,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
       const discovered = this.sanitizeProviderModels(await adapter.listModels(apiKey));
       const compatible = providerId === "kimi"
         ? discovered.filter((model) => model.id === KIMI_SUPPORTED_MODEL)
-        : discovered;
+        : providerId === "kimi-code" ? discovered.filter((model) => model.id === KIMI_CODE_MODEL) : discovered;
       if (compatible.length === 0) {
         throw new ProviderRequestError(
           providerId,
@@ -583,7 +723,7 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
           providerId === "deepseek" ? "empty-model-list" : "no-compatible-model",
           providerId === "deepseek"
             ? "DeepSeek returned no available models."
-            : "Kimi did not return kimi-k2.6 for this account. The last successful model list was kept.",
+            : providerId === "kimi" ? "Kimi did not return kimi-k2.6 for this account. The last successful model list was kept." : `${adapter.displayName} returned no models. The last successful model list was kept.`,
         );
       }
 
@@ -623,6 +763,11 @@ export default class CurrentNoteAiPlugin extends Plugin implements SettingsHost 
       const contextWindowTokens = model.contextWindowTokens;
       result.push({
         id,
+        ...(model.catalogSource === "manual" ? { catalogSource: "manual" as const } : {}),
+        ...(typeof model.displayName === "string" && model.displayName.length <= 200 ? { displayName: model.displayName } : {}),
+        ...(Array.isArray(model.supportedReasoningEfforts)
+          ? { supportedReasoningEfforts: [...new Set(model.supportedReasoningEfforts.filter((effort) => ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(effort)))] }
+          : {}),
         ...(typeof model.ownedBy === "string" && model.ownedBy.length <= 200
           ? { ownedBy: model.ownedBy }
           : {}),

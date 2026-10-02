@@ -1,4 +1,4 @@
-import type { ConversationMessage, SavedConversation } from "../types";
+import type { ConversationMessage, MessageReasoning, SavedConversation } from "../types";
 
 export const MAX_SAVED_CONVERSATIONS = 50;
 export const MAX_SAVED_CONVERSATION_BYTES = 5 * 1024 * 1024;
@@ -137,7 +137,12 @@ function sanitizeMessage(value: unknown): ConversationMessage | null {
   const noteHash = readString(value.noteHash, 200, true) ?? undefined;
   const continuationCount = readNonNegativeInteger(value.continuationCount, 100);
   const usage = sanitizeUsage(value.usage);
-  const providerId = value.providerId === "deepseek" || value.providerId === "kimi"
+  const actualServiceTier = readString(value.actualServiceTier, 100, true) ?? undefined;
+  const origin = value.origin === "ai" || value.origin === "local" ? value.origin : undefined;
+  const reasoningValues: readonly MessageReasoning[] = ["auto", "none", "minimal", "low", "medium", "high", "xhigh", "max", "off"];
+  const reasoning = typeof value.reasoning === "string" && reasoningValues.includes(value.reasoning as MessageReasoning)
+    ? value.reasoning as MessageReasoning : undefined;
+  const providerId = value.providerId === "deepseek" || value.providerId === "kimi" || value.providerId === "kimi-code" || value.providerId === "chatgpt"
     ? value.providerId
     : undefined;
   const modelId = providerId === undefined ? undefined : readTrimmedString(value.modelId, 200);
@@ -157,6 +162,9 @@ function sanitizeMessage(value: unknown): ConversationMessage | null {
     noteHash,
     continuationCount,
     usage,
+    ...(actualServiceTier === undefined ? {} : { actualServiceTier }),
+    ...(origin === undefined ? {} : { origin }),
+    ...(reasoning === undefined ? {} : { reasoning }),
     ...(providerId === undefined ? {} : { providerId, ...(modelId === undefined ? {} : { modelId }) }),
     ...(target === undefined ? {} : { target }),
   };
@@ -166,7 +174,7 @@ function sanitizeTarget(value: unknown): ConversationMessage["target"] {
   if (!isRecord(value)) return undefined;
   const profileId = readTrimmedString(value.profileId, MAX_PROFILE_ID_LENGTH);
   const profileRevision = readPositiveInteger(value.profileRevision, MAX_PROFILE_REVISION);
-  const providerId = value.providerId === "deepseek" || value.providerId === "kimi"
+  const providerId = value.providerId === "deepseek" || value.providerId === "kimi" || value.providerId === "kimi-code" || value.providerId === "chatgpt"
     ? value.providerId
     : undefined;
   const modelId = readTrimmedString(value.modelId, 200);
@@ -177,11 +185,11 @@ function sanitizeTarget(value: unknown): ConversationMessage["target"] {
 }
 
 function legacyTarget(
-  providerId: "deepseek" | "kimi",
+  providerId: "deepseek" | "kimi" | "kimi-code" | "chatgpt",
   modelId: string,
 ): ConversationMessage["target"] {
   return {
-    profileId: providerId === "deepseek" ? "legacy-deepseek" : "legacy-kimi",
+    profileId: providerId === "deepseek" ? "legacy-deepseek" : providerId === "kimi" ? "legacy-kimi" : providerId === "kimi-code" ? "local-kimi-code" : "chatgpt-plan",
     profileRevision: 1,
     providerId,
     modelId,

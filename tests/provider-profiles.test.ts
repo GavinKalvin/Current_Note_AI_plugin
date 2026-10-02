@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sanitizeSettings } from "../src/core/settings-sanitization";
+import { sanitizeConversationHistory } from "../src/core/conversation-history";
 import { MAX_PROVIDER_PROFILES } from "../src/core/provider-profiles";
 import type { CurrentNoteAiSettings } from "../src/settings";
 
@@ -221,5 +222,77 @@ describe("schema-v3 provider profile migration", () => {
       revision: 3,
       catalog: { models: [], lastSuccessfulRefreshAt: 0 },
     });
+  });
+
+  it("keeps ChatGPT plan account identity only, strips credentials, and sanitizes model labels", () => {
+    const accountId = "c1d8b3a0-9b3e-4ac9-8c2d-9f8740123456";
+    const result = sanitizeSettings({
+      ...DEFAULT_SETTINGS,
+      chatgptProfileAdded: true,
+      providerProfiles: [{
+        id: "chatgpt-work", label: "ChatGPT plan", providerId: "chatgpt", endpointId: "chatgpt-plan",
+        secretId: "must-not-survive", apiKey: "also-secret", accessToken: "never-persist",
+        chatgptAccountId: accountId, chatgptReasoningEffort: "xhigh", chatgptSpeed: "fast", enabled: true, revision: 2,
+        catalog: { models: [{ id: "gpt-model", displayName: "Friendly model", contextWindowTokens: 64_000, supportedReasoningEfforts: ["low", "high", "xhigh", "ultra"] }], lastSuccessfulRefreshAt: 7 },
+      }],
+      selectedProfileModel: { profileId: "chatgpt-work", modelId: "gpt-model" },
+    }, DEFAULT_SETTINGS);
+
+    expect(result.providerProfiles).toMatchObject([{
+      id: "chatgpt-work", providerId: "chatgpt", endpointId: "chatgpt-plan", secretId: "",
+      chatgptAccountId: accountId, chatgptReasoningEffort: "xhigh", chatgptSpeed: "fast",
+      catalog: { models: [{ id: "gpt-model", displayName: "Friendly model", contextWindowTokens: 64_000, supportedReasoningEfforts: ["low", "high", "xhigh"] }] },
+    }]);
+    expect(result.selectedProfileModel).toEqual({ profileId: "chatgpt-work", modelId: "gpt-model" });
+    expect(result.chatgptProfileAdded).toBe(true);
+    expect(JSON.stringify(result)).not.toMatch(/must-not-survive|also-secret|never-persist/);
+  });
+
+  it("rejects invalid ChatGPT account IDs and retains the one-time profile migration marker", () => {
+    const result = sanitizeSettings({
+      ...DEFAULT_SETTINGS,
+      chatgptProfileAdded: true,
+      providerProfiles: [{
+        id: "chatgpt-work", label: "ChatGPT plan", providerId: "chatgpt", endpointId: "chatgpt-plan",
+        secretId: "", chatgptAccountId: "not-a-uuid", enabled: true, revision: 1,
+        catalog: { models: [], lastSuccessfulRefreshAt: 0 },
+      }],
+    }, DEFAULT_SETTINGS);
+    expect(result.providerProfiles[0]?.chatgptAccountId).toBeUndefined();
+    expect(result.chatgptProfileAdded).toBe(true);
+  });
+
+  it("defaults invalid ChatGPT request options and excludes unsupported ultra effort", () => {
+    const result = sanitizeSettings({
+      ...DEFAULT_SETTINGS,
+      providerProfiles: [{
+        id: "chatgpt-work", label: "ChatGPT plan", providerId: "chatgpt", endpointId: "chatgpt-plan",
+        secretId: "", chatgptAccountId: "c1d8b3a0-9b3e-4ac9-8c2d-9f8740123456",
+        chatgptReasoningEffort: "ultra", chatgptSpeed: "ultrafast", enabled: true, revision: 1,
+        catalog: { models: [{ id: "gpt-model", supportedReasoningEfforts: ["low", "ultra"] }], lastSuccessfulRefreshAt: 0 },
+      }],
+    }, DEFAULT_SETTINGS);
+    expect(result.providerProfiles[0]).toMatchObject({
+      chatgptReasoningEffort: "auto", chatgptSpeed: "standard",
+      catalog: { models: [{ id: "gpt-model", supportedReasoningEfforts: ["low"] }] },
+    });
+  });
+
+  it("accepts ChatGPT in saved request targets without retaining arbitrary token fields", () => {
+    const history = sanitizeConversationHistory([{
+      id: "conversation", title: "Test", notePath: "", noteName: "", createdAt: 1, updatedAt: 1,
+      oauthToken: "must-not-survive",
+      messages: [{
+        id: "message", role: "assistant", content: "hello", createdAt: 1,
+        providerId: "chatgpt", modelId: "gpt-model", accessToken: "must-not-survive",
+        actualServiceTier: "fast",
+        target: { profileId: "chatgpt-work", profileRevision: 3, providerId: "chatgpt", modelId: "gpt-model", token: "must-not-survive" },
+      }],
+    }]);
+    expect(history[0]?.messages[0]?.target).toEqual({
+      profileId: "chatgpt-work", profileRevision: 3, providerId: "chatgpt", modelId: "gpt-model",
+    });
+    expect(history[0]?.messages[0]?.actualServiceTier).toBe("fast");
+    expect(JSON.stringify(history)).not.toContain("must-not-survive");
   });
 });

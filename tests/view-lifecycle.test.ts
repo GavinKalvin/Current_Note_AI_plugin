@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { MarkdownView } from "obsidian";
 import { hashText } from "../src/core/hash";
-import type { FrozenRequestTarget, ModelRef, ProfileModelRef, ProviderAdapter, ProviderProfile } from "../src/types";
+import type { CompletionOptions, CompletionRequest, FrozenRequestTarget, ModelRef, ProfileModelRef, ProviderAdapter, ProviderProfile } from "../src/types";
 import { CurrentNoteAiView } from "../src/view";
 
 function createView(options: {
@@ -275,5 +275,145 @@ describe("CurrentNoteAiView lifecycle hardening", () => {
     expect(kimi.complete).not.toHaveBeenCalled();
     expect(plugin.resolveRequestContext).toHaveBeenCalledWith(incomplete.target);
     expect(plugin.getApiKey).toHaveBeenCalledWith("legacy-deepseek");
+    expect((view as never as { messages: Array<Record<string, unknown>> }).messages.at(-1)).toMatchObject({
+      role: "assistant",
+      origin: "ai",
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      reasoning: "off",
+    });
+  });
+
+  it("records discussion provenance and reasoning from the request that was sent", async () => {
+    const { view, deepseek } = createView({ persistFails: false });
+    vi.spyOn(view as never, "render").mockImplementation(() => undefined);
+    deepseek.complete.mockResolvedValueOnce({ content: "Answer", finishReason: "stop" });
+    Object.assign(view as object, { draft: "Analyze this note" });
+
+    await (view as never as { sendDiscussion(): Promise<void> }).sendDiscussion();
+
+    expect((view as never as { messages: Array<Record<string, unknown>> }).messages.at(-1)).toMatchObject({
+      role: "assistant",
+      content: "Answer",
+      origin: "ai",
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      reasoning: "off",
+    });
+  });
+
+  it("freezes ChatGPT request metadata before awaiting a deferred provider response", async () => {
+    const { view, plugin } = createView();
+    let resolveResponse!: (value: { content: string; finishReason: string }) => void;
+    const deferred = new Promise<{ content: string; finishReason: string }>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const profile = {
+      id: "chatgpt-plan", providerId: "chatgpt", chatgptReasoningEffort: "high",
+      catalog: { models: [{ id: "gpt-chosen" }] },
+    } as unknown as ProviderProfile;
+    const options: CompletionOptions = {
+      model: "gpt-chosen", maxTokens: 100, responseFormat: "text", reasoningEffort: "high",
+    };
+    const request: CompletionRequest = { messages: [], options };
+    const context = {
+      profile,
+      model: { providerId: "chatgpt" as const, modelId: "gpt-chosen" },
+      adapter: { complete: vi.fn(() => deferred) },
+    };
+    const completeRequest = (view as never as {
+      completeRequest(context: unknown, request: CompletionRequest): Promise<{
+        generationMetadata: { origin: string; providerId: string; modelId: string; reasoning: string };
+      }>;
+    }).completeRequest.bind(view);
+
+    const pending = completeRequest(context, request);
+    options.model = "mutated-request-model";
+    options.reasoningEffort = "none";
+    profile.chatgptReasoningEffort = "max";
+    profile.catalog.models[0]!.id = "mutated-profile-model";
+    plugin.settings.selectedModel = { providerId: "kimi", modelId: "kimi-k2.6" };
+    resolveResponse({ content: "done", finishReason: "stop" });
+
+    await expect(pending).resolves.toMatchObject({
+      generationMetadata: {
+        origin: "ai", providerId: "chatgpt", modelId: "gpt-chosen", reasoning: "high",
+      },
+    });
+  });
+
+  it("records edit summaries and edit-retry results as AI generations", async () => {
+    const noteText = `before-unique ${"x".repeat(120)}`;
+    const { view, deepseek } = createView({ persistFails: false, noteText });
+    vi.spyOn(view as never, "render").mockImplementation(() => undefined);
+    const proposalResponse = {
+      content: JSON.stringify({
+        schemaVersion: 1,
+        summary: "Replace opening word",
+        operations: [{ id: "edit-one", oldText: "before-unique", newText: "after-unique", reason: "test" }],
+      }),
+      finishReason: "stop",
+    };
+    deepseek.complete.mockResolvedValueOnce(proposalResponse);
+    Object.assign(view as object, { draft: "Replace the opening word" });
+
+    await (view as never as { requestEditProposal(): Promise<void> }).requestEditProposal();
+
+    expect((view as never as { messages: Array<Record<string, unknown>> }).messages.at(-1)).toMatchObject({
+      content: "Replace opening word",
+      origin: "ai",
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      reasoning: "off",
+    });
+
+    // A separate attempt first receives a length-limited response, then retries
+    // against the frozen target and must retain the retry request provenance.
+    const retryView = createView({ persistFails: false, noteText }).view;
+    vi.spyOn(retryView as never, "render").mockImplementation(() => undefined);
+    const retryProvider = (retryView as never as { plugin: { providers: { deepseek: ProviderAdapter } } }).plugin.providers.deepseek;
+    retryProvider.complete = vi.fn()
+      .mockResolvedValueOnce({ content: "partial", finishReason: "length" })
+      .mockResolvedValueOnce(proposalResponse);
+    Object.assign(retryView as object, { draft: "Replace the opening word" });
+    await (retryView as never as { requestEditProposal(): Promise<void> }).requestEditProposal();
+    const retry = (retryView as never as { editRetry: unknown }).editRetry;
+    expect(retry).toBeTruthy();
+    await (retryView as never as { retryEditProposal(value: unknown): Promise<void> }).retryEditProposal(retry);
+    expect((retryView as never as { messages: Array<Record<string, unknown>> }).messages.at(-1)).toMatchObject({
+      content: "Replace opening word",
+      origin: "ai",
+      providerId: "deepseek",
+      modelId: "deepseek-v4-flash",
+      reasoning: "off",
+    });
+  });
+
+  it("marks applied and reverted edit messages as local, not AI provider generations", async () => {
+    const { view, editor } = createView({ persistFails: false });
+    vi.spyOn(view as never, "render").mockImplementation(() => undefined);
+    const proposal = {
+      candidate: {
+        summary: "Replace text",
+        operations: [{ id: "edit-1", oldText: "before", newText: "after", reason: "test", start: 0, end: 6 }],
+        baseText: "before", baseHash: hashText("before"), changedCharacters: 6, changeRatio: 1,
+      },
+      snapshot: { text: "before", hash: hashText("before"), filePath: "note.md", capturedAt: 1 },
+      selectedIds: new Set(["edit-1"]),
+      request: "replace",
+    };
+    await (view as never as { applyProposal(value: typeof proposal): Promise<void> }).applyProposal(proposal);
+    await (view as never as { revertLastApplied(): Promise<void> }).revertLastApplied();
+
+    expect(editor.value).toBe("before");
+    const localMessages = (view as never as { messages: Array<Record<string, unknown>> }).messages
+      .filter((message) => message.content === "Applied 1 reviewed edit." || message.content === "Reverted the last AI edit.");
+    expect(localMessages).toHaveLength(2);
+    for (const message of localMessages) {
+      expect(message.origin).toBe("local");
+      expect(message).not.toHaveProperty("providerId");
+      expect(message).not.toHaveProperty("modelId");
+      expect(message).not.toHaveProperty("reasoning");
+    }
   });
 });

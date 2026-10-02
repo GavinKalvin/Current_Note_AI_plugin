@@ -1,6 +1,8 @@
 import type { CurrentNoteAiSettings } from "../settings";
 import type {
   ModelRef,
+  ChatGptReasoningEffort,
+  ChatGptServiceTier,
   ProfileConsentGrant,
   ProfileModelRef,
   ProviderConsentGrant,
@@ -19,7 +21,7 @@ import {
 } from "./provider-profiles";
 import { sanitizeConversationHistory } from "./conversation-history";
 
-const PROVIDER_IDS = ["deepseek", "kimi"] as const;
+const PROVIDER_IDS = ["deepseek", "kimi", "kimi-code", "chatgpt"] as const;
 const MAX_AVAILABLE_MODELS = 100;
 const MAX_MODEL_LENGTH = 200;
 const MAX_PROFILE_ID_LENGTH = 200;
@@ -29,6 +31,7 @@ const MAX_CONTEXT_WINDOW = 2_000_000;
 const MAX_PROFILE_REVISION = 1_000_000;
 const MAX_DISCLOSURE_REVISION = 100;
 const MAX_TIMESTAMP = Number.MAX_SAFE_INTEGER;
+const CHATGPT_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -92,7 +95,7 @@ function positiveInteger(value: unknown, maximum: number): number | undefined {
 }
 
 function providerId(value: unknown): ProviderId | undefined {
-  return value === "deepseek" || value === "kimi" ? value : undefined;
+  return value === "deepseek" || value === "kimi" || value === "kimi-code" || value === "chatgpt" ? value : undefined;
 }
 
 function providerEndpointId(value: unknown, provider: ProviderId): ProviderEndpointId {
@@ -112,6 +115,10 @@ function sanitizeProviderModel(value: unknown): ProviderModel | undefined {
   if (!id) return undefined;
 
   const result: ProviderModel = { id };
+  if (saved.catalogSource === "manual") result.catalogSource = "manual";
+  if (typeof saved.displayName === "string" && saved.displayName.length <= MAX_MODEL_LENGTH) {
+    result.displayName = saved.displayName;
+  }
   if (typeof saved.ownedBy === "string" && saved.ownedBy.length <= MAX_MODEL_LENGTH) {
     result.ownedBy = saved.ownedBy;
   }
@@ -120,6 +127,11 @@ function sanitizeProviderModel(value: unknown): ProviderModel | undefined {
     result.contextWindowTokens = saved.contextWindowTokens;
   }
   if (typeof saved.supportsReasoning === "boolean") result.supportsReasoning = saved.supportsReasoning;
+  if (Array.isArray(saved.supportedReasoningEfforts)) {
+    const efforts = saved.supportedReasoningEfforts.filter((effort): effort is typeof CHATGPT_REASONING_EFFORTS[number] =>
+      typeof effort === "string" && (CHATGPT_REASONING_EFFORTS as readonly string[]).includes(effort));
+    if (efforts.length > 0) result.supportedReasoningEfforts = [...new Set(efforts)];
+  }
   return result;
 }
 
@@ -235,7 +247,17 @@ function sanitizeProfile(
     endpointId: providerEndpointId(saved.endpointId, provider),
     // This is a vault-secret reference, never an API-key value. Unknown secret
     // fields are intentionally ignored by this sanitizer.
-    secretId: boundedString(saved.secretId, "", MAX_SECRET_ID_LENGTH),
+    secretId: provider === "kimi-code" || provider === "chatgpt" ? "" : boundedString(saved.secretId, "", MAX_SECRET_ID_LENGTH),
+    ...(provider === "kimi-code" ? { cliPath: boundedString(saved.cliPath, "", 2_000).trim() } : {}),
+    ...(provider === "chatgpt" && typeof saved.chatgptAccountId === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(saved.chatgptAccountId)
+      ? { chatgptAccountId: saved.chatgptAccountId.toLowerCase() }
+      : {}),
+    ...(provider === "chatgpt" ? {
+      chatgptReasoningEffort: ( ["auto", ...CHATGPT_REASONING_EFFORTS] as string[]).includes(String(saved.chatgptReasoningEffort))
+        ? saved.chatgptReasoningEffort as ChatGptReasoningEffort : "auto",
+      chatgptSpeed: saved.chatgptSpeed === "fast" ? "fast" as ChatGptServiceTier : "standard" as ChatGptServiceTier,
+    } : {}),
     enabled: typeof saved.enabled === "boolean" ? saved.enabled : true,
     revision: endpointIdentityChanged
       ? Math.min(MAX_PROFILE_REVISION, savedRevision + 1)
@@ -277,7 +299,7 @@ function sanitizeProfileModel(value: unknown, profiles: readonly ProviderProfile
 }
 
 function legacyProfileIdFor(provider: ProviderId): string {
-  return provider === "deepseek" ? LEGACY_DEEPSEEK_PROFILE_ID : LEGACY_KIMI_PROFILE_ID;
+  return provider === "deepseek" ? LEGACY_DEEPSEEK_PROFILE_ID : provider === "kimi" ? LEGACY_KIMI_PROFILE_ID : provider === "kimi-code" ? "local-kimi-code" : "chatgpt-plan";
 }
 
 function migrateProfiles(
@@ -290,6 +312,8 @@ function migrateProfiles(
   const fallbackCatalogs: Record<ProviderId, ProviderModelCatalog> = {
     deepseek: deepSeekCatalog,
     kimi: kimiCatalog,
+    "kimi-code": emptyCatalog(),
+    chatgpt: emptyCatalog(),
   };
   const parsed: ProviderProfile[] = [];
   const seen = new Set<string>();
@@ -421,6 +445,8 @@ export function sanitizeSettings(value: unknown, defaults: CurrentNoteAiSettings
     selectedProfileModel,
     profileConsents,
     migrationVersion: 3,
+    kimiCodeProfileAdded: saved.kimiCodeProfileAdded === true,
+    chatgptProfileAdded: saved.chatgptProfileAdded === true,
     // Keep all v0.1.6 shadow fields present and sanitized for rollback and
     // older installed binaries. No secret material is copied from unknown keys.
     selectedModel,

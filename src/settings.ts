@@ -15,6 +15,8 @@ import type {
   ProviderId,
   ProviderModelCatalog,
   ProviderProfile,
+  ChatGptReasoningEffort,
+  ChatGptServiceTier,
   SavedConversation,
 } from "./types";
 import {
@@ -24,6 +26,7 @@ import {
   PROVIDER_ENDPOINTS,
   getProviderEndpoint,
 } from "./core/provider-profiles";
+import { getChatGptAccountInfo } from "./provider/chatgpt-auth";
 
 export interface CurrentNoteAiSettings {
   schemaVersion: 3;
@@ -34,7 +37,9 @@ export interface CurrentNoteAiSettings {
   // v0.1.6 shadow fields retained for rollback compatibility.
   selectedModel: ModelRef;
   kimiSecretId: string;
-  providerCatalogs: Record<ProviderId, ProviderModelCatalog>;
+  providerCatalogs: Record<Exclude<ProviderId, "kimi-code" | "chatgpt">, ProviderModelCatalog>;
+  kimiCodeProfileAdded?: boolean;
+  chatgptProfileAdded?: boolean;
   providerConsents: Partial<Record<ProviderId, ProviderConsentGrant>>;
   // Legacy DeepSeek shadow fields retained for rollback compatibility.
   secretId: string;
@@ -117,13 +122,16 @@ export interface SettingsHost {
   addProfile(providerId: ProviderId): Promise<string>;
   updateProfile(
     profileId: string,
-    changes: Partial<Pick<ProviderProfile, "label" | "secretId" | "enabled" | "endpointId">>,
+    changes: Partial<Pick<ProviderProfile, "label" | "secretId" | "enabled" | "endpointId" | "cliPath">>,
   ): Promise<void>;
   deleteProfile(profileId: string): Promise<void>;
   moveProfile(profileId: string, direction: -1 | 1): Promise<void>;
   resetProfileConsent(profileId: string): Promise<void>;
   testConnection(profileId: string): Promise<string[]>;
   selectModel(model: ProfileModelRef): Promise<void>;
+  signInChatGpt(profileId: string): Promise<void>;
+  signOutChatGpt(profileId: string): Promise<void>;
+  updateChatGptOptions(profileId: string, options: { reasoningEffort: ChatGptReasoningEffort; speed: ChatGptServiceTier }): Promise<void>;
 }
 
 export class CurrentNoteAiSettingTab extends PluginSettingTab {
@@ -151,10 +159,10 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
       .setName("Provider profiles")
       .setHeading();
     containerEl.createEl("p", {
-      text: "Each profile keeps its own secret, model catalog, consent, and request history identity. API destinations use reviewed provider presets.",
+      text: "Each profile keeps its own model catalog, consent, and request history identity. DeepSeek/Kimi use API secrets; Kimi Code uses its official local CLI login; ChatGPT uses official plan sign-in.",
     });
     const addActions = containerEl.createDiv({ cls: "current-note-ai-profile-add-actions" });
-    for (const providerId of ["deepseek", "kimi"] as const) {
+    for (const providerId of ["deepseek", "kimi", "kimi-code", "chatgpt"] as const) {
       const button = addActions.createEl("button", {
         text: `Add ${PROVIDER_PRESETS[providerId].displayName}`,
       });
@@ -172,14 +180,14 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
 
     const maxTokensSetting = new Setting(containerEl)
       .setName("Maximum output tokens")
-      .setDesc(`${this.host.settings.maxTokens} per request. Incomplete discussions can be continued; incomplete edits may offer one bounded higher-budget retry.`)
+      .setDesc(`${this.host.settings.maxTokens} per request. ChatGPT preview treats this as a soft length target, not a hard provider limit; Kimi Code may share this budget with reasoning. Incomplete discussions can be continued; incomplete edits may offer one bounded higher-budget retry.`)
       .addSlider((slider) => slider
         .setLimits(512, 16_384, 512)
         .setDynamicTooltip()
         .setValue(this.host.settings.maxTokens)
         .onChange(async (value) => {
           this.host.settings.maxTokens = value;
-          maxTokensSetting.setDesc(`${value} per request. Incomplete discussions can be continued; incomplete edits may offer one bounded higher-budget retry.`);
+          maxTokensSetting.setDesc(`${value} per request. ChatGPT preview treats this as a soft length target, not a hard provider limit; Kimi Code may share this budget with reasoning. Incomplete discussions can be continued; incomplete edits may offer one bounded higher-budget retry.`);
           await this.saveWithNotice();
         }));
 
@@ -260,7 +268,43 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         .onChange((value) => {
           void this.runProfileAction(() => this.host.updateProfile(profile.id, { label: value }));
         }));
-    new Setting(card)
+    if (profile.providerId === "chatgpt") {
+      new Setting(card)
+        .setName("ChatGPT plan sign-in")
+        .setDesc("Official OpenAI sign-in for your ChatGPT plan. Credentials stay outside the vault; this profile stores only a random account identifier.")
+        .addButton((button) => button
+          .setButtonText("Continue with ChatGPT")
+          .onClick(() => void this.runProfileAction(async () => {
+            try { await this.host.signInChatGpt(profile.id); }
+            finally { this.display(); }
+          })));
+      const accountLine = card.createEl("p", { text: "Checking sign-in status…" });
+      if (profile.chatgptAccountId) {
+        void getChatGptAccountInfo(profile.chatgptAccountId).then((info) => {
+          accountLine.setText(info.signedIn ? `Signed in${info.email ? ` as ${info.email}` : ""}.` : "Not signed in.");
+        }).catch(() => accountLine.setText("Sign-in status unavailable."));
+        const usage = card.createEl("a", { text: "Manage ChatGPT usage" });
+        usage.href = "https://chatgpt.com/settings/usage";
+        usage.setAttr("target", "_blank");
+        usage.setAttr("rel", "noopener noreferrer");
+        new Setting(card).addButton((button) => button.setButtonText("Sign out")
+          .onClick(() => void this.runProfileAction(async () => {
+            await this.host.signOutChatGpt(profile.id);
+            this.display();
+          })));
+      } else accountLine.setText("Not signed in.");
+    } else if (profile.providerId === "kimi-code") {
+      new Setting(card)
+        .setName("Kimi Code executable")
+        .setDesc("Leave blank to discover the official CLI, or enter its absolute path. Requires CLI 0.36.1+, membership login and K3-256k. Checking the CLI does not send notes or test cloud entitlement.")
+        .addText((text) => text
+          .setPlaceholder("Auto-detect kimi")
+          .setValue(profile.cliPath ?? "")
+          .onChange((value) => void this.runProfileAction(() => this.host.updateProfile(profile.id, { cliPath: value }))));
+      new Setting(card)
+        .setName("Subscription quota · K3-256k")
+        .setDesc("No plugin API key. The CLI sends supplied note text to Kimi cloud and retains its own local session logs. Global CLI hooks, enabled plugins and MCP servers are blocked for this note-only integration.");
+    } else new Setting(card)
       .setName("API key secret")
       .setDesc("Choose a vault-scoped secret. The key is never stored in plugin data.")
       .addComponent((element) => new SecretComponent(this.app, element)
@@ -278,16 +322,18 @@ export class CurrentNoteAiSettingTab extends PluginSettingTab {
         }));
     const actions = new Setting(card).setName("Profile actions");
     actions.addButton((button) => button
-      .setButtonText("Test connection")
+      .setButtonText(profile.providerId === "kimi-code" ? "Check local CLI" : "Test connection")
       .onClick(async () => {
         button.setDisabled(true).setButtonText("Testing…");
         try {
           const models = await this.host.testConnection(profile.id);
-          new Notice(`${profile.label} connected. Available models: ${models.join(", ")}`);
+          new Notice(profile.providerId === "kimi-code"
+            ? `${profile.label} local configuration verified. Model: K3-256k. Cloud login/quota is checked on the first request.`
+            : `${profile.label} connected. Available models: ${models.join(", ")}`);
         } catch (error) {
           new Notice(error instanceof Error ? error.message : "Connection test failed.");
         } finally {
-          button.setDisabled(false).setButtonText("Test connection");
+          button.setDisabled(false).setButtonText(profile.providerId === "kimi-code" ? "Check local CLI" : "Test connection");
         }
       }));
     actions.addButton((button) => button

@@ -8,6 +8,10 @@ import {
 } from "./core/completion";
 import { shouldSubmitComposer } from "./core/composer-shortcut";
 import { renderAssistantMarkdown } from "./core/markdown-rendering";
+import { appendMathStyles } from "./core/math-styles";
+import { copyMessageText } from "./core/message-copy";
+import { captureGenerationMetadata, formatMessageDateTime, reasoningLabel } from "./core/message-metadata";
+import type { GenerationMetadata } from "./core/message-metadata";
 import { evaluateRequestBudget } from "./core/request-budget";
 import {
   buildDiscussionContinuationMessages,
@@ -19,9 +23,14 @@ import { CurrentDocumentError } from "./context";
 import { FullNoteConsentModal } from "./modals";
 import { ProviderRequestError } from "./provider/errors";
 import type CurrentNoteAiPlugin from "./main";
+import { chatGptEffortChoices, chatGptSpeedLabel } from "./core/chatgpt-options";
 import type { ProviderRequestContext } from "./main";
 import type {
   CompletionOptions,
+  CompletionRequest,
+  CompletionResponse,
+  ChatGptReasoningEffort,
+  ChatGptServiceTier,
   ConversationMessage,
   DocumentSnapshot,
   EditProposalCandidate,
@@ -70,6 +79,8 @@ export class CurrentNoteAiView extends ItemView {
   private busy = false;
   private modelLoading = false;
   private activeRequestProviderName = "AI provider";
+  private requestAbort: AbortController | null = null;
+  private activeRequestProfileId: string | null = null;
   private historyOpen = false;
   private activeConversationId: string | null = null;
   private activeConversationTitle = "";
@@ -83,7 +94,7 @@ export class CurrentNoteAiView extends ItemView {
   private proposalApplyButton: HTMLButtonElement | null = null;
   private revertButton: HTMLButtonElement | null = null;
   private renderedMessageCount = 0;
-  private readonly assistantHtmlCache = new Map<string, { source: string; html: string }>();
+  private readonly messageHtmlCache = new Map<string, { source: string; html: string }>();
   private pendingScrollTimer: { window: Window; id: number } | null = null;
   private observedCurrentLeaf: WorkspaceLeaf | null = null;
   private observedCurrentFile: TFile | null = null;
@@ -117,9 +128,11 @@ export class CurrentNoteAiView extends ItemView {
 
   async onClose(): Promise<void> {
     this.requestGeneration += 1;
+    this.requestAbort?.abort();
+    this.requestAbort = null;
     this.clearPendingScrollTimer();
     this.messages = [];
-    this.assistantHtmlCache.clear();
+    this.messageHtmlCache.clear();
     this.pendingProposal = null;
     this.editRetry = null;
     this.lastApplied = null;
@@ -133,6 +146,18 @@ export class CurrentNoteAiView extends ItemView {
       (current?.leaf ?? null) === this.observedCurrentLeaf
       && (current?.file ?? null) === this.observedCurrentFile
     ) return;
+    this.render();
+  }
+
+  handleProfileSignedOut(profileId: string): void {
+    if (this.activeRequestProfileId === profileId) {
+      this.requestGeneration += 1;
+      this.requestAbort?.abort();
+      this.requestAbort = null;
+      this.activeRequestProfileId = null;
+      this.busy = false;
+      this.errorMessage = "The ChatGPT session was signed out. The response will be ignored.";
+    }
     this.render();
   }
 
@@ -166,6 +191,7 @@ export class CurrentNoteAiView extends ItemView {
     this.clearPendingScrollTimer();
     contentEl.empty();
     contentEl.addClass("current-note-ai-view");
+    appendMathStyles(contentEl);
     this.proposalStatusEl = null;
     this.proposalApplyButton = null;
     this.revertButton = null;
@@ -290,7 +316,8 @@ export class CurrentNoteAiView extends ItemView {
         optionModels.set(optionKey, ref);
         const unavailable = !catalogModels.some((candidate) => candidate.id === model.id);
         const option = group.createEl("option", {
-          text: unavailable ? `${model.id} (unavailable)` : model.id,
+          text: unavailable ? `${model.displayName ?? model.id} (unavailable)`
+            : model.catalogSource === "manual" ? `${model.displayName ?? model.id} (manual · access unverified)` : model.displayName ?? model.id,
           value: optionKey,
         });
         option.disabled = unavailable;
@@ -316,6 +343,50 @@ export class CurrentNoteAiView extends ItemView {
     });
     refreshModels.disabled = this.busy || this.modelLoading;
     refreshModels.addEventListener("click", () => void this.refreshModels());
+
+    const selectedProfile = this.plugin.settings.providerProfiles.find((profile) => profile.id === this.plugin.settings.selectedProfileModel?.profileId);
+    if (selectedProfile?.providerId === "chatgpt") {
+      const planLink = modelBar.createEl("a", { text: "Using ChatGPT plan · Manage usage" });
+      planLink.href = "https://chatgpt.com/settings/usage";
+      planLink.setAttr("target", "_blank");
+      planLink.setAttr("rel", "noopener noreferrer");
+      const selectedModel = selectedProfile.catalog.models.find((model) => model.id === this.plugin.settings.selectedProfileModel?.modelId);
+      if (selectedModel?.catalogSource === "manual") {
+        modelBar.createSpan({ cls: "current-note-ai-model-access-hint", text: "Not in the account catalog. Access is checked on Send; no model fallback." });
+      }
+      const reasoning = modelBar.createEl("select", { cls: "current-note-ai-option-select", attr: { "aria-label": "ChatGPT reasoning effort", title: "ChatGPT reasoning effort" } });
+      reasoning.createEl("option", { text: "Reasoning · Auto", value: "auto" });
+      const effortOptions = chatGptEffortChoices(selectedModel);
+      for (const effort of effortOptions) reasoning.createEl("option", { text: `Reasoning · ${effort}`, value: effort });
+      const savedEffort = selectedProfile.chatgptReasoningEffort ?? "auto";
+      if (savedEffort !== "auto" && !effortOptions.includes(savedEffort)) {
+        const unavailableEffort = reasoning.createEl("option", { text: `Reasoning · ${savedEffort} (unavailable)`, value: savedEffort });
+        unavailableEffort.disabled = true;
+      }
+      reasoning.value = savedEffort;
+      reasoning.disabled = this.busy || this.modelLoading;
+      reasoning.addEventListener("change", () => {
+        const effort = reasoning.value as ChatGptReasoningEffort;
+        void this.plugin.updateChatGptOptions(selectedProfile.id, {
+          reasoningEffort: effort,
+          speed: selectedProfile.chatgptSpeed ?? "standard",
+        }).catch((error) => new Notice(error instanceof Error ? error.message : "Could not update ChatGPT reasoning."));
+      });
+      const speed = modelBar.createEl("select", { cls: "current-note-ai-option-select", attr: { "aria-label": "ChatGPT speed", title: "ChatGPT speed (fast may use more quota)" } });
+      speed.createEl("option", { text: "Speed · Standard", value: "standard" });
+      speed.createEl("option", { text: "Speed · Fast (uses more quota)", value: "fast" });
+      const ultrafast = speed.createEl("option", { text: "Ultrafast · not eligible on Plus", value: "ultrafast" });
+      ultrafast.disabled = true;
+      speed.value = selectedProfile.chatgptSpeed ?? "standard";
+      speed.disabled = this.busy || this.modelLoading;
+      speed.addEventListener("change", () => {
+        const selectedSpeed = speed.value === "fast" ? "fast" : "standard";
+        void this.plugin.updateChatGptOptions(selectedProfile.id, {
+          reasoningEffort: selectedProfile.chatgptReasoningEffort ?? "auto",
+          speed: selectedSpeed as ChatGptServiceTier,
+        }).catch((error) => new Notice(error instanceof Error ? error.message : "Could not update ChatGPT speed."));
+      });
+    }
 
     const actions = header.createDiv({ cls: "current-note-ai-header-actions" });
     if (this.busy) {
@@ -397,7 +468,7 @@ export class CurrentNoteAiView extends ItemView {
     this.requestGeneration += 1;
     this.busy = false;
     this.messages = conversation.messages.map((message) => ({ ...message }));
-    this.assistantHtmlCache.clear();
+    this.messageHtmlCache.clear();
     this.pendingProposal = null;
     this.editRetry = null;
     this.lastApplied = null;
@@ -512,34 +583,87 @@ export class CurrentNoteAiView extends ItemView {
       cls: `current-note-ai-message-row is-${message.role}`,
     });
     const group = row.createDiv({ cls: "current-note-ai-message-group" });
+    if (message.role === "assistant") this.renderMessageProvenance(group, message);
     const bubble = group.createDiv({ cls: "current-note-ai-bubble" });
-    if (message.role === "assistant") {
-      bubble.addClass("current-note-ai-markdown", "markdown-rendered");
-      const cached = this.assistantHtmlCache.get(message.id);
-      const html = cached?.source === message.content
-        ? cached.html
-        : renderAssistantMarkdown(message.content);
-      if (!cached || cached.source !== message.content) {
-        this.assistantHtmlCache.set(message.id, { source: message.content, html });
-      }
-      bubble.innerHTML = html;
-      this.renderMessageMetadata(group, message);
-    } else {
-      bubble.setText(message.content);
+    bubble.addClass("current-note-ai-markdown", "markdown-rendered");
+    const cached = this.messageHtmlCache.get(message.id);
+    const html = cached?.source === message.content
+      ? cached.html
+      : renderAssistantMarkdown(message.content);
+    if (!cached || cached.source !== message.content) {
+      this.messageHtmlCache.set(message.id, { source: message.content, html });
     }
+    bubble.innerHTML = html;
+    if (message.role === "assistant") this.renderMessageMetadata(group, message);
+    const footer = group.createDiv({ cls: "current-note-ai-message-footer" });
+    if (message.role === "assistant") {
+      const timestamp = formatMessageDateTime(message.createdAt);
+      if (timestamp) footer.createEl("time", {
+        cls: "current-note-ai-message-time",
+        text: timestamp.text,
+        attr: {
+          datetime: timestamp.dateTime,
+          title: `Answer received · ${timestamp.timeZone} · ${timestamp.dateTime}`,
+          "aria-label": `Date & Time · ${timestamp.text} · ${timestamp.timeZone}`,
+        },
+      });
+    }
+    const actions = footer.createDiv({ cls: "current-note-ai-message-actions" });
+    const copy = actions.createEl("button", {
+      cls: "current-note-ai-copy-button",
+      text: "Copy",
+      attr: { title: "Copy original message (Markdown / LaTeX)", "aria-label": "Copy original message" },
+    });
+    copy.addEventListener("click", () => {
+      const clipboard = this.contentEl.win.navigator?.clipboard;
+      void copyMessageText(message.content, clipboard)
+        .then(() => new Notice("Message copied."))
+        .catch((error: Error) => new Notice(error.message));
+    });
+  }
+
+  private renderMessageProvenance(container: HTMLElement, message: ConversationMessage): void {
+    const header = container.createDiv({
+      cls: "current-note-ai-message-provenance",
+      attr: { role: "group", "aria-label": message.origin === "local" ? "Local action" : "Model and Reasoning" },
+    });
+    if (message.origin === "local") {
+      header.createSpan({ cls: "current-note-ai-message-model", text: "Current Note AI · Local action" });
+      return;
+    }
+    const model = message.modelId || message.target?.modelId;
+    header.createSpan({
+      cls: "current-note-ai-message-model",
+      text: `Model · ${model || "Not recorded"}`,
+      attr: { title: model ? `Model selected for this answer: ${model}` : "This older message did not record its model." },
+    });
+    header.createSpan({
+      cls: "current-note-ai-message-reasoning",
+      text: `Reasoning · ${reasoningLabel(message.reasoning)}`,
+      attr: {
+        title: message.reasoning === undefined ? "This older message did not record its reasoning setting."
+          : message.reasoning === "auto" ? "Server default requested; actual reasoning effort was not reported."
+            : "Requested reasoning setting at generation time; not a display of hidden reasoning.",
+      },
+    });
   }
 
   private renderMessageMetadata(container: HTMLElement, message: ConversationMessage): void {
-    if (message.generationState !== "incomplete") return;
+    if (message.generationState !== "incomplete" && !message.actualServiceTier) return;
 
-    const metadata = container.createDiv({ cls: "current-note-ai-message-metadata" });
-    const reason = message.finishReason === "length"
-      ? "Incomplete · output limit reached"
-      : `Incomplete · finish reason: ${message.finishReason ?? "unknown"}`;
-    metadata.createSpan({ cls: "current-note-ai-incomplete-label", text: reason });
+    const metadata = container.createDiv({ cls: "current-note-ai-message-metadata", attr: { role: "group", "aria-label": "Generation status" } });
+    if (message.generationState === "incomplete") {
+      const reason = message.finishReason === "length"
+        ? "Incomplete · output limit reached"
+        : `Incomplete · finish reason: ${message.finishReason ?? "unknown"}`;
+      metadata.createSpan({ cls: "current-note-ai-incomplete-label", text: reason });
+    }
+    if (message.actualServiceTier) {
+      metadata.createSpan({ cls: "current-note-ai-service-tier", text: `Server speed · ${chatGptSpeedLabel(message.actualServiceTier)}` });
+    }
 
     const completionTokens = message.usage?.completionTokens;
-    if (completionTokens !== undefined) {
+    if (message.generationState === "incomplete" && completionTokens !== undefined) {
       metadata.createSpan({ text: `${completionTokens.toLocaleString()} generated tokens` });
     }
 
@@ -708,6 +832,10 @@ export class CurrentNoteAiView extends ItemView {
     });
 
     const actions = composer.createDiv({ cls: "current-note-ai-composer-actions" });
+    const selectedProfile = this.plugin.settings.providerProfiles.find((profile) => profile.id === this.plugin.settings.selectedProfileModel?.profileId);
+    if (selectedProfile?.providerId === "chatgpt") {
+      actions.createSpan({ cls: "current-note-ai-composer-hint", text: "Using ChatGPT plan" });
+    }
     actions.createDiv({
       cls: "current-note-ai-composer-hint",
       text: "↵ newline · ⇧↵ send",
@@ -741,7 +869,7 @@ export class CurrentNoteAiView extends ItemView {
     this.requestGeneration += 1;
     this.busy = false;
     this.messages = [];
-    this.assistantHtmlCache.clear();
+    this.messageHtmlCache.clear();
     this.pendingProposal = null;
     this.editRetry = null;
     this.lastApplied = null;
@@ -754,6 +882,8 @@ export class CurrentNoteAiView extends ItemView {
 
   private cancelLogicalRequest(): void {
     this.requestGeneration += 1;
+    this.requestAbort?.abort();
+    this.requestAbort = null;
     this.busy = false;
     this.errorMessage = `The response will be ignored. ${this.activeRequestProviderName} may already be processing the request remotely.`;
     this.render();
@@ -781,6 +911,8 @@ export class CurrentNoteAiView extends ItemView {
       context.displayName,
       context.destination,
       includesCrossProviderHistory,
+      context.profile.providerId === "kimi-code",
+      context.profile.providerId === "chatgpt",
     ).request();
     if (!accepted) return false;
     this.plugin.settings.profileConsents[context.profile.id] = {
@@ -825,6 +957,11 @@ export class CurrentNoteAiView extends ItemView {
     maxTokens: number,
     responseFormat: CompletionOptions["responseFormat"],
   ): CompletionOptions {
+    const effort = context.profile.chatgptReasoningEffort;
+    if (context.profile.providerId === "chatgpt" && effort && effort !== "auto"
+      && !chatGptEffortChoices(context.profile.catalog.models.find((model) => model.id === context.model.modelId)).includes(effort)) {
+      throw new CurrentDocumentError("The selected reasoning effort is unavailable for this GPT model. Choose Auto or a supported effort in the header. Nothing was sent.");
+    }
     return {
       model: context.model.modelId,
       maxTokens,
@@ -832,7 +969,29 @@ export class CurrentNoteAiView extends ItemView {
       ...(context.profile.providerId === "deepseek"
         ? { temperature: this.plugin.settings.temperature }
         : {}),
+      ...(context.profile.providerId === "chatgpt" && context.profile.chatgptReasoningEffort && context.profile.chatgptReasoningEffort !== "auto"
+        ? { reasoningEffort: context.profile.chatgptReasoningEffort }
+        : {}),
+      ...(context.profile.providerId === "chatgpt"
+        ? { serviceTier: context.profile.chatgptSpeed === "fast" ? "fast" as const : "default" as const }
+        : {}),
     };
+  }
+
+  private async completeRequest(context: ProviderRequestContext, request: CompletionRequest): Promise<CompletionResponse & { generationMetadata: Readonly<GenerationMetadata> }> {
+    const controller = new AbortController();
+    const generationMetadata = captureGenerationMetadata(context.model.providerId, request.options);
+    this.requestAbort = controller;
+    this.activeRequestProfileId = context.profile.id;
+    try {
+      const response = await context.adapter.complete(this.plugin.getApiKey(context.profile.id), request, controller.signal);
+      return { ...response, generationMetadata };
+    } finally {
+      if (this.requestAbort === controller) {
+        this.requestAbort = null;
+        this.activeRequestProfileId = null;
+      }
+    }
   }
 
   private hasHistoryBindingMismatch(): boolean {
@@ -843,7 +1002,7 @@ export class CurrentNoteAiView extends ItemView {
 
   private resetConversationState(): void {
     this.messages = [];
-    this.assistantHtmlCache.clear();
+    this.messageHtmlCache.clear();
     this.pendingProposal = null;
     this.editRetry = null;
     this.lastApplied = null;
@@ -978,8 +1137,9 @@ export class CurrentNoteAiView extends ItemView {
         this.plugin.settings.maxTokens,
       );
       this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens, context);
-      const response = await context.adapter.complete(
-        this.plugin.getApiKey(context.profile.id),
+      if (generation !== this.requestGeneration) return;
+      const response = await this.completeRequest(
+        context,
         {
         messages: providerMessages,
           options: this.completionOptions(context, this.plugin.settings.maxTokens, "text"),
@@ -988,14 +1148,14 @@ export class CurrentNoteAiView extends ItemView {
       if (generation !== this.requestGeneration) return;
 
       this.messages.push(this.newMessage("assistant", response.content, {
+        ...response.generationMetadata,
         requestKind: "discussion",
         finishReason: response.finishReason,
+        actualServiceTier: response.actualServiceTier,
         generationState: response.finishReason === "stop" ? "complete" : "incomplete",
         usage: response.usage,
         noteHash: snapshot.hash,
         continuationCount: 0,
-        providerId: context.model.providerId,
-        modelId: context.model.modelId,
         target: context.target,
       }));
       await this.persistConversation(snapshot);
@@ -1043,8 +1203,9 @@ export class CurrentNoteAiView extends ItemView {
         this.plugin.settings.maxTokens,
       );
       this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens, context);
-      const response = await context.adapter.complete(
-        this.plugin.getApiKey(context.profile.id),
+      if (generation !== this.requestGeneration) return;
+      const response = await this.completeRequest(
+        context,
         {
           messages: providerMessages,
           options: this.completionOptions(context, this.plugin.settings.maxTokens, "text"),
@@ -1066,14 +1227,14 @@ export class CurrentNoteAiView extends ItemView {
       }
       this.messages.push(this.newMessage("user", "Continue"));
       this.messages.push(this.newMessage("assistant", trimmedContent, {
+        ...response.generationMetadata,
         requestKind: "discussion",
         finishReason: response.finishReason,
+        actualServiceTier: response.actualServiceTier,
         generationState: response.finishReason === "stop" ? "complete" : "incomplete",
         usage: response.usage,
         noteHash: snapshot.hash,
         continuationCount: (incompleteMessage.continuationCount ?? 0) + 1,
-        providerId: context.model.providerId,
-        modelId: context.model.modelId,
         target: context.target,
       }));
       await this.persistConversation(snapshot);
@@ -1117,8 +1278,9 @@ export class CurrentNoteAiView extends ItemView {
         this.plugin.settings.maxTokens,
       );
       this.assertRequestBudget(providerMessages, this.plugin.settings.maxTokens, context);
-      const response = await context.adapter.complete(
-        this.plugin.getApiKey(context.profile.id),
+      if (generation !== this.requestGeneration) return;
+      const response = await this.completeRequest(
+        context,
         {
           messages: providerMessages,
           options: this.completionOptions(context, this.plugin.settings.maxTokens, "json"),
@@ -1166,13 +1328,13 @@ export class CurrentNoteAiView extends ItemView {
         request,
       };
       this.messages.push(this.newMessage("assistant", candidate.summary, {
+        ...response.generationMetadata,
         requestKind: "edit",
         finishReason: response.finishReason,
+        actualServiceTier: response.actualServiceTier,
         generationState: "complete",
         usage: response.usage,
         noteHash: snapshot.hash,
-        providerId: context.model.providerId,
-        modelId: context.model.modelId,
         target: context.target,
       }));
       await this.persistConversation(snapshot);
@@ -1239,8 +1401,9 @@ export class CurrentNoteAiView extends ItemView {
         retryBudget,
       );
       this.assertRequestBudget(providerMessages, retryBudget, context);
-      const response = await context.adapter.complete(
-        this.plugin.getApiKey(context.profile.id),
+      if (generation !== this.requestGeneration) return;
+      const response = await this.completeRequest(
+        context,
         {
           messages: providerMessages,
           options: this.completionOptions(context, retryBudget, "json"),
@@ -1290,13 +1453,13 @@ export class CurrentNoteAiView extends ItemView {
         request: retry.request,
       };
       this.messages.push(this.newMessage("assistant", candidate.summary, {
+        ...response.generationMetadata,
         requestKind: "edit",
         finishReason: response.finishReason,
+        actualServiceTier: response.actualServiceTier,
         generationState: "complete",
         usage: response.usage,
         noteHash: retry.snapshot.hash,
-        providerId: context.model.providerId,
-        modelId: context.model.modelId,
         target: context.target,
       }));
       await this.persistConversation(retry.snapshot);
@@ -1348,6 +1511,7 @@ export class CurrentNoteAiView extends ItemView {
       this.messages.push(this.newMessage(
         "assistant",
         `Applied ${operations.length} reviewed edit${operations.length === 1 ? "" : "s"}.`,
+        { origin: "local" },
       ));
       new Notice("Current Note AI applied the selected edits.");
       this.render();
@@ -1384,7 +1548,7 @@ export class CurrentNoteAiView extends ItemView {
         throw new CurrentDocumentError("The revert result did not match the saved pre-edit snapshot.");
       }
       this.lastApplied = null;
-      this.messages.push(this.newMessage("assistant", "Reverted the last AI edit."));
+      this.messages.push(this.newMessage("assistant", "Reverted the last AI edit.", { origin: "local" }));
       this.errorMessage = "";
       new Notice("Current Note AI reverted the last AI edit.");
       this.render();
@@ -1429,7 +1593,8 @@ export class CurrentNoteAiView extends ItemView {
 
   private describeError(error: unknown): string {
     if (error instanceof ProviderRequestError) {
-      const provider = error.providerId === "deepseek" ? "DeepSeek" : "Kimi";
+      const provider = PROVIDER_PRESETS[error.providerId].displayName;
+      if (error.providerId === "chatgpt" || error.providerId === "kimi-code") return error.message;
       if (error.status === 401) return `${provider} rejected the API key. Choose a valid ${provider} secret in plugin settings.`;
       if (error.status === 402) return `The ${provider} account has insufficient balance.`;
       if (error.status === 404) return `${provider} does not provide the selected model to this account.`;

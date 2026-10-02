@@ -8,6 +8,8 @@ import type {
 
 export const LEGACY_DEEPSEEK_PROFILE_ID = "legacy-deepseek";
 export const LEGACY_KIMI_PROFILE_ID = "legacy-kimi";
+export const KIMI_CODE_PROFILE_ID = "local-kimi-code";
+export const CHATGPT_PROFILE_ID = "chatgpt-plan";
 export const MAX_PROVIDER_PROFILES = 32;
 
 export interface ProviderPreset {
@@ -25,6 +27,18 @@ export interface ProviderEndpointPreset {
 }
 
 export const PROVIDER_ENDPOINTS: Record<ProviderEndpointId, ProviderEndpointPreset> = {
+  "kimi-code-local": {
+    id: "kimi-code-local",
+    providerId: "kimi-code",
+    displayName: "Local CLI · subscription",
+    baseUrl: "Official local Kimi Code CLI → Kimi Code cloud (subscription quota)",
+  },
+  "chatgpt-plan": {
+    id: "chatgpt-plan",
+    providerId: "chatgpt",
+    displayName: "ChatGPT · Plan quota",
+    baseUrl: "https://api.openai.com/v1",
+  },
   "deepseek-official": {
     id: "deepseek-official",
     providerId: "deepseek",
@@ -46,6 +60,18 @@ export const PROVIDER_ENDPOINTS: Record<ProviderEndpointId, ProviderEndpointPres
 };
 
 export const PROVIDER_PRESETS: Record<ProviderId, ProviderPreset> = {
+  "kimi-code": {
+    providerId: "kimi-code",
+    displayName: "Kimi Code · Local quota",
+    defaultEndpointId: "kimi-code-local",
+    endpointIds: ["kimi-code-local"],
+  },
+  chatgpt: {
+    providerId: "chatgpt",
+    displayName: "ChatGPT · Plan quota",
+    defaultEndpointId: "chatgpt-plan",
+    endpointIds: ["chatgpt-plan"],
+  },
   deepseek: {
     providerId: "deepseek",
     displayName: "DeepSeek",

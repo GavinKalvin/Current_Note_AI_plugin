@@ -1,9 +1,13 @@
 export type ProviderRole = "system" | "user" | "assistant";
-export type ProviderKind = "deepseek" | "kimi";
+export type ProviderKind = "deepseek" | "kimi" | "kimi-code" | "chatgpt";
 // Kept as an alias for adapter and v0.1.6 history compatibility.
 export type ProviderId = ProviderKind;
 export type ProfileId = string;
-export type ProviderEndpointId = "deepseek-official" | "kimi-cn" | "kimi-global";
+export type ProviderEndpointId = "deepseek-official" | "kimi-cn" | "kimi-global" | "kimi-code-local" | "chatgpt-plan";
+export type ChatGptReasoningEffort = "auto" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ChatGptServiceTier = "standard" | "fast";
+/** Requested reasoning setting frozen for this answer; never hidden chain of thought. */
+export type MessageReasoning = ChatGptReasoningEffort | "off";
 
 export interface ModelRef {
   providerId: ProviderId;
@@ -25,6 +29,8 @@ export interface CompletionOptions {
   maxTokens: number;
   temperature?: number;
   responseFormat: "text" | "json";
+  reasoningEffort?: Exclude<ChatGptReasoningEffort, "auto">;
+  serviceTier?: "default" | "fast";
 }
 
 export interface CompletionRequest {
@@ -44,20 +50,25 @@ export interface CompletionResponse {
   content: string;
   finishReason: string;
   usage?: CompletionUsage;
+  actualServiceTier?: string;
 }
 
 export interface ProviderModel {
   id: string;
+  displayName?: string;
+  /** Explicit user-requested model absent from the live account catalog. */
+  catalogSource?: "manual";
   ownedBy?: string;
   contextWindowTokens?: number;
   supportsReasoning?: boolean;
+  supportedReasoningEfforts?: Exclude<ChatGptReasoningEffort, "auto">[];
 }
 
 export interface ProviderAdapter {
   readonly id: ProviderId;
   readonly displayName: string;
   listModels(apiKey: string): Promise<ProviderModel[]>;
-  complete(apiKey: string, request: CompletionRequest): Promise<CompletionResponse>;
+  complete(apiKey: string, request: CompletionRequest, signal?: AbortSignal): Promise<CompletionResponse>;
 }
 
 export interface ProviderModelCatalog {
@@ -71,6 +82,12 @@ export interface ProviderProfile {
   providerId: ProviderId;
   endpointId: ProviderEndpointId;
   secretId: string;
+  /** Absolute official Kimi Code executable path; blank enables discovery. */
+  cliPath?: string;
+  /** Non-secret account identity for official ChatGPT plan OAuth. */
+  chatgptAccountId?: string;
+  chatgptReasoningEffort?: ChatGptReasoningEffort;
+  chatgptSpeed?: ChatGptServiceTier;
   enabled: boolean;
   revision: number;
   catalog: ProviderModelCatalog;
@@ -107,6 +124,9 @@ export interface ConversationMessage {
   providerId?: ProviderId;
   modelId?: string;
   target?: FrozenRequestTarget;
+  actualServiceTier?: string;
+  origin?: "ai" | "local";
+  reasoning?: MessageReasoning;
 }
 
 export interface SavedConversation {
